@@ -421,7 +421,7 @@ export async function searchLiveAds({ query = "", adSetIds = [], limit = 25 } = 
 export async function listLiveAdsForImport({ limit = 1000 } = {}) {
   const client = getZitharaProdPool();
   if (!client) return [];
-  const take = Math.min(Math.max(Number(limit) || 1000, 1), 5000);
+  const take = Math.min(Math.max(Number(limit) || 1000, 1), 10_000);
   const { rows } = await client.query(
     `SELECT
        a.ad_id AS "adId",
