@@ -2,7 +2,8 @@ import { detectCategoryIntent, isPriceAsk } from "./zitharaProd.js";
 import { findStore } from "./storeDirectory.js";
 
 const SHOW_MORE = /\b(show me )?(more|aur) (designs?|options?|pieces?|rings?|earrings?|necklaces?)|show more|any more|aur dikhao|more like this|similar\b/i;
-const SCHEDULE_CALL = /\b(call me|schedule|book (a )?(call|appointment)|video call|callback|call back)\b/i;
+const SCHEDULE_CALL = /\b(call me|give me a call|can you call|please call|schedule|book (a )?(call|appointment)|video call|callback|call back|arrange a (call|visit)|want a call)\b/i;
+const STORE_ASK = /\b(store|stores|shop|boutique|nearest|near me|visit|address|location|which city|what city|where are you|hours|timing|map|branch|branches)\b/i;
 const INTERESTED = /\b(interested|i (like|love|want) (this|it)|this one|book this|hold this)\b/i;
 
 export function emptySession(channel = "web") {
@@ -39,25 +40,57 @@ export function wantsScheduleCall(message) {
   return SCHEDULE_CALL.test(String(message || ""));
 }
 
-function parseBudget(message) {
-  const text = String(message || "").toLowerCase();
-  const under = text.match(/(?:under|below|upto|up to|budget)\s*(?:of\s*)?(?:rs\.?|inr|₹)?\s*(\d+(?:\.\d+)?)\s*(k|lakh|lac|l)?/i);
-  const range = text.match(/(\d+(?:\.\d+)?)\s*(k|lakh|lac|l)?\s*(?:-|to|–)\s*(\d+(?:\.\d+)?)\s*(k|lakh|lac|l)?/i);
-  const toAmount = (n, unit) => {
-    const value = Number(n);
-    if (!value) return null;
-    const u = String(unit || "").toLowerCase();
-    if (u === "k") return value * 1000;
-    if (u === "lakh" || u === "lac" || u === "l") return value * 100000;
-    return value < 1000 ? value * 1000 : value;
-  };
+export function wantsStoreInfo(message) {
+  return STORE_ASK.test(String(message || ""));
+}
+
+export function formatPhoneDisplay(number) {
+  const digits = String(number || "").replace(/\D/g, "").slice(-10);
+  if (digits.length !== 10) return number || "";
+  return `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`;
+}
+
+const NUM = "(\\d+(?:[.,]\\d+)?)";
+const UNIT = "(k|lakh|lac|l|thousand|hazar)?";
+
+function toBudgetAmount(n, unit) {
+  const value = Number(String(n || "").replace(/,/g, ""));
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const u = String(unit || "").toLowerCase();
+  if (u === "k" || u === "thousand" || u === "hazar") return value * 1000;
+  if (u === "lakh" || u === "lac" || u === "l") return value * 100000;
+  return value < 1000 ? value * 1000 : value;
+}
+
+export function parseBudget(message) {
+  const text = String(message || "")
+    .toLowerCase()
+    .replace(/₹/g, " ")
+    .replace(/\b(?:rs\.?|inr|rupees?)\b/g, " ");
+
+  const between = text.match(new RegExp(`between\\s*${NUM}\\s*${UNIT}\\s*(?:and|to|–|-)\\s*${NUM}\\s*${UNIT}`));
+  if (between) {
+    return { budgetMin: toBudgetAmount(between[1], between[2]), budgetMax: toBudgetAmount(between[3], between[4] || between[2]) };
+  }
+
+  const range = text.match(new RegExp(`${NUM}\\s*${UNIT}\\s*(?:-|to|–|se)\\s*${NUM}\\s*${UNIT}`));
   if (range) {
-    return { budgetMin: toAmount(range[1], range[2]), budgetMax: toAmount(range[3], range[4] || range[2]) };
+    return { budgetMin: toBudgetAmount(range[1], range[2]), budgetMax: toBudgetAmount(range[3], range[4] || range[2]) };
   }
-  if (under) {
-    return { budgetMin: null, budgetMax: toAmount(under[1], under[2]) };
+
+  const cap = text.match(new RegExp(
+    `(?:under|below|upto|up\\s*to|within|around|about|till|until|max(?:imum)?|budget(?:\\s+is|\\s+of)?)\\s*${NUM}\\s*${UNIT}`
+  ));
+  if (cap) {
+    return { budgetMin: null, budgetMax: toBudgetAmount(cap[1], cap[2]) };
   }
+
   return { budgetMin: null, budgetMax: null };
+}
+
+export function isBudgetMessage(message) {
+  const budget = parseBudget(message);
+  return budget.budgetMin != null || budget.budgetMax != null;
 }
 
 function parsePhone(message) {
@@ -90,17 +123,32 @@ export function inferCategoryFromAd(ad) {
   return detectCategoryIntent([ad.adName, ad.referralHeadline, ad.referralBody, ad.productName].filter(Boolean).join(" "))?.id || null;
 }
 
-export function phonePolicy(channel, session) {
+export function phonePolicy(channel, session, { wantsCall = false } = {}) {
   const ch = String(channel || session.channel || "web").toLowerCase();
   const hasPhone = Boolean(session.phone?.number);
+  const pretty = formatPhoneDisplay(session.phone?.number);
+  if (!wantsCall) {
+    return {
+      channel: ch,
+      hasPhone,
+      number: session.phone?.number || null,
+      instruction: "CALL FLOW: they did not ask for a call. Do not mention a callback, stylist call, 'number on file', Instagram/WhatsApp number, or 'we can contact you'. Answer only what they asked.",
+    };
+  }
+
+  const steps = `CALL FLOW (they asked to be called). One warm step at a time — no jargon:
+1) Confirm: "Happy to arrange a call with our stylist."
+2) If city is unknown, ask which city first.
+3) Confirm the number. Never say "on file" or "Instagram number".
+4) Ask morning / afternoon / evening, today or tomorrow.
+5) Close: "Our team will call you then." Do not add the store address unless they also asked to visit.`;
+
   if (ch === "whatsapp") {
     return {
       channel: "whatsapp",
       hasPhone,
       number: session.phone?.number || null,
-      instruction: hasPhone
-        ? `WhatsApp: do not ask for a new number. When scheduling a call, ask them to confirm this WhatsApp number: ${session.phone.number}.`
-        : "WhatsApp: do not ask them to type a phone number. When scheduling a call, ask them to confirm you may use this WhatsApp chat’s number.",
+      instruction: `${steps}\nWhatsApp: do not ask them to type a new number. Ask: "We'll call you on this WhatsApp number — does that work?"${pretty ? ` Display as ${pretty} only if they ask to see it.` : ""}`,
     };
   }
   if (ch === "instagram" || ch === "facebook") {
@@ -109,8 +157,8 @@ export function phonePolicy(channel, session) {
       hasPhone,
       number: session.phone?.number || null,
       instruction: hasPhone
-        ? `Instagram/Facebook: a number is already on file (${session.phone.number}). Do not ask again. Confirm it only if they want a call.`
-        : "Instagram/Facebook: no phone is on file. Ask for a WhatsApp number only if they want a call, appointment, or shipping update.",
+        ? `${steps}\nA WhatsApp number is available (${pretty}). Ask: "Shall we reach you on ${pretty}?" Do not call it an Instagram number.`
+        : `${steps}\nNo WhatsApp number yet. Ask once: "Please share a WhatsApp number we can call."`,
     };
   }
   return {
@@ -118,8 +166,8 @@ export function phonePolicy(channel, session) {
     hasPhone,
     number: session.phone?.number || null,
     instruction: hasPhone
-      ? `A number is on file (${session.phone.number}). Confirm it for a call instead of asking again.`
-      : "Ask for a WhatsApp number only if they want a call or appointment.",
+      ? `${steps}\nConfirm: "Shall we reach you on ${pretty}?"`
+      : `${steps}\nAsk once for a WhatsApp number.`,
   };
 }
 
@@ -155,6 +203,7 @@ export function updateSessionContext({ session, channel, signals, adContext, cus
 
   if (signals.budgetMin != null) next.budgetMin = signals.budgetMin;
   if (signals.budgetMax != null) next.budgetMax = signals.budgetMax;
+  if (signals.budgetMin != null || signals.budgetMax != null) next.catalogOffset = 0;
   if (signals.city) {
     next.city = signals.city;
     next.storeId = signals.storeId;
@@ -184,8 +233,20 @@ export function updateSessionContext({ session, channel, signals, adContext, cus
 export { isPriceAsk };
 
 export function catalogQueryForSession(message, session, signals, adContext) {
+  const budgetJustSet = signals.budgetMin != null || signals.budgetMax != null;
+  const categoryId = signals.category || session.category || detectCategoryIntent(message)?.id || null;
+
   if (signals.category && signals.category !== session.category) {
-    return { query: message, categoryId: signals.category, offset: 0 };
+    return { query: budgetJustSet ? signals.category : message, categoryId: signals.category, offset: 0 };
+  }
+  if (budgetJustSet) {
+    if (categoryId) {
+      return { query: categoryId, categoryId, offset: 0, preferLastShown: true };
+    }
+    if (session.lastShownProducts?.length) {
+      return { reuseLast: true, query: "pp", preferLastShown: true };
+    }
+    return { featured: true, query: "pp" };
   }
   if (isPriceAsk(message)) {
     if (session.lastShownProducts?.length) return { reuseLast: true, query: session.category || "pp" };
