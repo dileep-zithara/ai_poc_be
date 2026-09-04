@@ -16,7 +16,7 @@ import documentsRouter from "./routes/documents.js";
 import adContextRouter from "./routes/adContext.js";
 import chatRouter from "./routes/chat.js";
 import modelConfigRouter from "./routes/modelConfig.js";
-import webSourcesRouter from "./routes/webSources.js";
+import webSourcesRouter, { resumePendingWebSources } from "./routes/webSources.js";
 import businessProfileRouter from "./routes/businessProfile.js";
 import agentSettingsRouter from "./routes/agentSettings.js";
 import adCatalogRouter from "./routes/adCatalog.js";
@@ -25,8 +25,24 @@ import catalogRouter from "./routes/catalog.js";
 import { pingZitharaProd, zitharaProdConfigured } from "./services/zitharaProd.js";
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+const corsOrigins = (process.env.CORS_ORIGINS || "https://zagent.zithara.live,http://localhost:5173,http://127.0.0.1:5173")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (corsOrigins.includes(origin) || corsOrigins.includes("*")) return callback(null, true);
+    try {
+      if (/(^|\.)zithara\.live$/.test(new URL(origin).hostname)) return callback(null, true);
+    } catch { /* ignore */ }
+    return callback(null, true);
+  },
+  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  maxAge: 86400,
+}));
+app.use(express.json({ limit: "2mb" }));
 
 app.get("/health", async (_req, res) => {
   const prod = zitharaProdConfigured() ? await pingZitharaProd() : { configured: false, ok: false };
@@ -50,7 +66,10 @@ async function start() {
   await sequelize.sync(databaseCapabilities.isPostgres ? {} : { alter: true });
   await migrateDatabase();
   await buildKBIndex(); // picks up whatever's already ingested
-  app.listen(config.port, () => console.log(`ai-layer backend listening on :${config.port}`));
+  app.listen(config.port, () => {
+    console.log(`ai-layer backend listening on :${config.port}`);
+    resumePendingWebSources().catch((err) => console.error("[webSources] resume failed:", err.message));
+  });
   if (zitharaProdConfigured()) {
     pingZitharaProd().then((prod) => {
       if (prod.ok) console.log(`[zitharaProd] connected — ${prod.productCount} Tyaani catalog products`);
