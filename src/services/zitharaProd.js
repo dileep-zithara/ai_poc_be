@@ -418,6 +418,33 @@ export async function searchLiveAds({ query = "", adSetIds = [], limit = 25 } = 
   return rows;
 }
 
+export async function listLiveAdsForImport({ limit = 1000 } = {}) {
+  const client = getZitharaProdPool();
+  if (!client) return [];
+  const take = Math.min(Math.max(Number(limit) || 1000, 1), 5000);
+  const { rows } = await client.query(
+    `SELECT
+       a.ad_id AS "adId",
+       a.name,
+       a.adset_name AS "adsetName",
+       a.ad_set_id AS "adSetId",
+       a.status,
+       a.ad_creative_id AS "creativeId",
+       a.updated_at AS "updatedAt",
+       c.body AS "creativeBody",
+       c.title AS "creativeTitle",
+       c.call_to_action_type AS "callToActionType",
+       COALESCE(c.thumbnail_s3_url, c.thumbnail_url) AS "thumbnailUrl"
+     FROM meta_ads a
+     LEFT JOIN meta_ad_creatives c ON c.ad_creative_id = a.ad_creative_id
+     WHERE a.merchant_id = $1
+     ORDER BY a.updated_at DESC NULLS LAST
+     LIMIT $2`,
+    [config.tyaaniMerchantId, take]
+  );
+  return rows;
+}
+
 export async function getAdReferralContext(adId) {
   const client = getZitharaProdPool();
   if (!client || !adId) return null;

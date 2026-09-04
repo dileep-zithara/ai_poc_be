@@ -13,6 +13,7 @@ export async function migrateDatabase() {
   await sequelize.query('ALTER TABLE "BusinessProfiles" ALTER COLUMN "contactInfo" TYPE TEXT');
   await sequelize.query('ALTER TABLE "BusinessProfiles" ALTER COLUMN "socialLinks" TYPE TEXT');
   await sequelize.query('ALTER TABLE "BusinessProfiles" ALTER COLUMN "supportHours" TYPE TEXT');
+  await sequelize.query('ALTER TABLE "BusinessProfiles" ADD COLUMN IF NOT EXISTS "importJob" TEXT NOT NULL DEFAULT \'{"status":"idle"}\'');
   await sequelize.query('ALTER TABLE "Conversations" ADD COLUMN IF NOT EXISTS "channel" VARCHAR(255) NOT NULL DEFAULT \'web\'');
   await sequelize.query('ALTER TABLE "Conversations" ADD COLUMN IF NOT EXISTS "sessionContext" TEXT NOT NULL DEFAULT \'{}\'');
   await sequelize.query('ALTER TABLE "AgentSettings" ADD COLUMN IF NOT EXISTS "nudgeDelayMinutes" INTEGER NOT NULL DEFAULT 60');

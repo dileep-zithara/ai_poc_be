@@ -16,4 +16,7 @@ export const BusinessProfile = sequelize.define("BusinessProfile", {
   aiInstructions: { type: DataTypes.TEXT, allowNull: true },
   prefilledFields: { type: DataTypes.TEXT, allowNull: false, defaultValue: "[]" }, // JSON array of field names
   confirmed: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  // Website import runs in the background so the HTTP request can return
+  // before the reverse-proxy gateway timeout (typically 30–60s).
+  importJob: { type: DataTypes.TEXT, allowNull: false, defaultValue: '{"status":"idle"}' },
 });

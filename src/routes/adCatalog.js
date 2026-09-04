@@ -3,6 +3,7 @@ import multer from "multer";
 import fs from "fs/promises";
 import os from "os";
 import { AdCatalogEntry } from "../models/AdCatalogEntry.js";
+import { listLiveAdsForImport, zitharaProdConfigured } from "../services/zitharaProd.js";
 
 const upload = multer({ dest: os.tmpdir() });
 const router = Router();
@@ -37,6 +38,36 @@ router.post("/import", upload.single("file"), async (req, res) => {
     res.json({ ok: true, imported, total: rows.length });
   } catch (err) {
     console.error("[adCatalog import] error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Pull live Meta ads from zithara_prod and upsert them into the local catalog. */
+router.post("/sync-from-prod", async (req, res) => {
+  if (!zitharaProdConfigured()) {
+    return res.status(503).json({ error: "zithara_prod is not configured — set ZITHARA_PROD_DATABASE_URL" });
+  }
+  try {
+    const rows = await listLiveAdsForImport({ limit: req.body?.limit });
+    let imported = 0;
+    for (const row of rows) {
+      if (!row.adId) continue;
+      await AdCatalogEntry.upsert({
+        adId: String(row.adId),
+        name: row.name || row.creativeTitle || null,
+        adsetName: row.adsetName || null,
+        campaignId: null,
+        creativeId: row.creativeId || null,
+        status: row.status || null,
+        spend: null,
+        roas: null,
+        rawData: row,
+      });
+      imported += 1;
+    }
+    res.json({ ok: true, imported, total: rows.length, source: "zithara_prod" });
+  } catch (err) {
+    console.error("[adCatalog sync-from-prod] error:", err);
     res.status(500).json({ error: err.message });
   }
 });

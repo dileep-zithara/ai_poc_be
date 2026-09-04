@@ -1,7 +1,7 @@
 import * as cheerio from "cheerio";
 
 const MAX_CHARS_PER_PAGE = 50_000;
-const FETCH_TIMEOUT_MS = 18_000;
+const FETCH_TIMEOUT_MS = 12_000;
 const BROWSER_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -201,13 +201,13 @@ async function fetchPage(url) {
  * Crawls same-domain pages starting at `startUrl`, preferring brand / policy /
  * store pages over product listings. Returns [{ url, title, text, signals }].
  */
-export async function crawlSite(startUrl, pageLimit = 2) {
+export async function crawlSite(startUrl, pageLimit = 2, onProgress) {
   const limit = Math.min(Math.max(Number(pageLimit) || 2, 1), 80);
   const start = normalizePageUrl(startUrl, startUrl) || startUrl;
   const queue = new Set([start]);
   const visited = new Set();
   const pages = [];
-  const concurrency = 5;
+  const concurrency = 8;
 
   for (const seeded of await discoverSitemapPages(start)) queue.add(seeded);
   for (const seeded of policySeeds(start)) queue.add(seeded);
@@ -225,6 +225,7 @@ export async function crawlSite(startUrl, pageLimit = 2) {
         if (!visited.has(link)) queue.add(link);
       }
     }
+    if (onProgress) await onProgress({ pagesFetched: pages.length });
   }
 
   return pages.sort((a, b) => (b.score || 0) - (a.score || 0));

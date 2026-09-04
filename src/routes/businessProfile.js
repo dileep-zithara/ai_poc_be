@@ -1,6 +1,9 @@
 import { Router } from "express";
 import { BusinessProfile } from "../models/BusinessProfile.js";
+import { WebSource } from "../models/WebSource.js";
+import { KBChunk } from "../models/KBChunk.js";
 import { crawlSite, mergeSignals } from "../services/webCrawler.js";
+import { buildKBIndex } from "../services/kbIndex.js";
 import { callLLM } from "../services/llm/index.js";
 
 const SINGLETON_ID = 1;
@@ -24,10 +27,35 @@ async function getProfile() {
   return row;
 }
 
+const IMPORT_STALE_MS = 6 * 60 * 1000;
+const IDLE_JOB = { status: "idle" };
+
+function parseImportJob(raw) {
+  try {
+    const job = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (job && typeof job === "object" && job.status) return job;
+  } catch {
+    // fall through
+  }
+  return { ...IDLE_JOB };
+}
+
 function serialize(row) {
   const prefilledFields = JSON.parse(row.prefilledFields);
   const filledCount = FIELDS.filter((f) => row[f]).length;
-  return { ...row.toJSON(), prefilledFields, filledCount, totalFields: FIELDS.length };
+  return { ...row.toJSON(), prefilledFields, filledCount, totalFields: FIELDS.length, importJob: parseImportJob(row.importJob) };
+}
+
+function isImportRunning(job) {
+  if (job?.status !== "running") return false;
+  const started = Date.parse(job.startedAt || "");
+  return Number.isFinite(started) ? Date.now() - started < IMPORT_STALE_MS : true;
+}
+
+async function writeImportJob(row, job) {
+  row.importJob = JSON.stringify(job);
+  await row.save();
+  return job;
 }
 
 router.get("/", async (_req, res) => {
@@ -132,20 +160,44 @@ function pagesForModel(pages) {
   return chunks.join("\n\n");
 }
 
-router.post("/import-from-website", async (req, res) => {
-  const { url, pageLimit = 60 } = req.body;
-  if (!url?.trim()) return res.status(400).json({ error: "url is required" });
-  const normalizedUrl = /^https?:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
+async function indexPagesForKb(url, pages) {
+  const existing = await WebSource.findOne({ where: { url } });
+  const source = existing || await WebSource.create({ url, pageLimit: pages.length });
+  if (existing) {
+    await KBChunk.destroy({ where: { sourceDoc: url } });
+  }
+  for (const page of pages) {
+    const paragraphs = page.text
+      .split(/\n{2,}/)
+      .map((p) => p.trim())
+      .filter((p) => p.length > 40);
+    for (const content of paragraphs) {
+      await KBChunk.create({ sourceDoc: source.url, section: page.title || page.url, type: "prose", content });
+    }
+  }
+  source.status = "done";
+  source.pageLimit = pages.length;
+  source.pagesFetched = pages.length;
+  source.error = null;
+  await source.save();
+  await buildKBIndex();
+}
 
+async function runWebsiteImport(normalizedUrl, pageLimit) {
+  const row = await getProfile();
+  const job = parseImportJob(row.importJob);
   try {
-    const pages = await crawlSite(normalizedUrl, Number(pageLimit) || 60);
-    if (pages.length === 0) return res.status(422).json({ error: "Could not fetch any page content from that URL" });
-      const signals = mergeSignals(pages);
+    const pages = await crawlSite(normalizedUrl, pageLimit, async ({ pagesFetched }) => {
+      const latest = await getProfile();
+      const current = parseImportJob(latest.importJob);
+      if (current.status !== "running") return;
+      await writeImportJob(latest, { ...current, pagesFetched });
+    });
+    if (pages.length === 0) throw new Error("Could not fetch any page content from that URL");
+
+    const signals = mergeSignals(pages);
     const heuristics = heuristicProfile(pages, signals, normalizedUrl);
     const combinedText = pagesForModel(pages);
-
-    const row = await getProfile();
-    row.website = normalizedUrl;
 
     let extracted = null;
     let usedLLM = false;
@@ -172,28 +224,79 @@ router.post("/import-from-website", async (req, res) => {
       }
     }
 
+    const latest = await getProfile();
+    latest.website = normalizedUrl;
     const newlyPrefilled = [];
     for (const key of FIELDS) {
       if (key === "website") {
-        row.website = normalizedUrl;
+        latest.website = normalizedUrl;
         newlyPrefilled.push("website");
         continue;
       }
       if (merged[key]) {
-        row[key] = merged[key];
+        latest[key] = merged[key];
         newlyPrefilled.push(key);
       }
     }
+    const prefilled = new Set([...JSON.parse(latest.prefilledFields), ...newlyPrefilled]);
+    latest.prefilledFields = JSON.stringify([...prefilled]);
 
-    const prefilled = new Set([...JSON.parse(row.prefilledFields), ...newlyPrefilled]);
-    row.prefilledFields = JSON.stringify([...prefilled]);
-    await row.save();
+    try {
+      await indexPagesForKb(normalizedUrl, pages);
+    } catch (err) {
+      console.warn("[businessProfile] KB indexing after import failed:", err.message);
+    }
 
-    res.json({
-      profile: serialize(row),
+    const pageSummaries = pages.map((p) => ({ url: p.url, title: p.title, score: p.score }));
+    await writeImportJob(latest, {
+      ...job,
+      status: "done",
       pagesFetched: pages.length,
       usedLLM,
-      pages: pages.map((p) => ({ url: p.url, title: p.title, score: p.score })),
+      pages: pageSummaries,
+      error: null,
+      finishedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error("[businessProfile import] error:", err);
+    const latest = await getProfile();
+    await writeImportJob(latest, {
+      ...parseImportJob(latest.importJob),
+      status: "failed",
+      error: err.message,
+      finishedAt: new Date().toISOString(),
+    });
+  }
+}
+
+router.post("/import-from-website", async (req, res) => {
+  const { url, pageLimit = 25 } = req.body;
+  if (!url?.trim()) return res.status(400).json({ error: "url is required" });
+  const normalizedUrl = /^https?:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
+  const limit = Number(pageLimit) || 25;
+
+  try {
+    const row = await getProfile();
+    const current = parseImportJob(row.importJob);
+    if (isImportRunning(current)) {
+      return res.status(202).json({ status: "running", profile: serialize(row) });
+    }
+
+    row.website = normalizedUrl;
+    const job = {
+      status: "running",
+      url: normalizedUrl,
+      pageLimit: limit,
+      startedAt: new Date().toISOString(),
+      pagesFetched: 0,
+      usedLLM: false,
+      pages: [],
+      error: null,
+    };
+    await writeImportJob(row, job);
+    res.status(202).json({ status: "running", profile: serialize(row) });
+    runWebsiteImport(normalizedUrl, limit).catch((err) => {
+      console.error("[businessProfile import] background error:", err);
     });
   } catch (err) {
     console.error("[businessProfile import] error:", err);
