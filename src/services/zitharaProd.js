@@ -51,7 +51,7 @@ const CATEGORY_INTENTS = [
   {
     id: "earrings",
     tokens: ["earrings", "earring", "jhumka", "jhumkas", "chandbali", "chandbalis", "hoops"],
-    categories: ["Earrings", "Long Earrings", "Chandbalis", "Hoops"],
+    categories: ["Earrings", "Long Earrings", "Chandbalis", "Hoops", "Tops"],
     rejectName: /\b(ring|rings)\b/i,
   },
   {
@@ -111,6 +111,7 @@ export function shouldSearchCatalog(query, session = null) {
   const q = String(query || "").trim().toLowerCase();
   if (isPriceAsk(q)) return true;
   if (session?.category && /\b(more|designs?|similar|options?|pieces?)\b/i.test(q)) return true;
+  if (/\b(budget|under|below|upto|up to|within|between|lakh|lac|\dk)\b/i.test(q)) return true;
   if (q.length < 3 || CATALOG_SKIP.has(q)) return false;
   return true;
 }
@@ -135,12 +136,36 @@ export function detectCategoryIntent(query) {
   return CATEGORY_INTENTS.find((intent) => intent.tokens.some((token) => tokens.includes(token))) || null;
 }
 
+const BUDGET_STOP = new Set([
+  "the", "and", "for", "with", "from", "under", "below", "upto", "budget",
+  "lakh", "lac", "more", "show", "designs", "design", "options", "pieces",
+  "within", "around", "about", "between", "till", "until", "max", "maximum",
+  "inr", "rupee", "rupees", "thousand", "hazar", "want", "like", "please",
+  "mera", "meri", "mere", "hai", "hain",
+]);
+
+function isBudgetToken(token) {
+  return /^(?:\d+(?:\.\d+)?)(k|lakh|lac|l|thousand|hazar)?$/.test(token)
+    || BUDGET_STOP.has(token);
+}
+
 function extraNameFilters(query, intent) {
-  const reserved = new Set((intent?.tokens || []).concat([
-    "the", "and", "for", "with", "from", "under", "below", "upto", "budget",
-    "lakh", "lac", "more", "show", "designs", "design", "options", "pieces",
-  ]));
-  return queryTokens(query).filter((token) => token.length > 2 && !reserved.has(token));
+  const reserved = new Set(intent?.tokens || []);
+  return queryTokens(query).filter((token) => token.length > 2 && !reserved.has(token) && !isBudgetToken(token));
+}
+
+export function productInBudget(product, budgetMin, budgetMax) {
+  const price = Number(product?.price);
+  if (!Number.isFinite(price)) return false;
+  if (budgetMin != null && Number(budgetMin) > 0 && price < Number(budgetMin)) return false;
+  if (budgetMax != null && Number(budgetMax) > 0 && price > Number(budgetMax)) return false;
+  return true;
+}
+
+export function filterByBudget(products, budgetMin, budgetMax) {
+  const list = Array.isArray(products) ? products : [];
+  if (!Number(budgetMin) && !Number(budgetMax)) return list;
+  return list.filter((p) => productInBudget(p, budgetMin, budgetMax));
 }
 
 function keepRow(row, intent) {
@@ -203,6 +228,8 @@ export async function searchCatalogProducts(query, limit = 8, options = {}) {
     budgetMin ? `price >= ${Number(budgetMin)}` : "",
     budgetMax ? `price <= ${Number(budgetMax)}` : "",
   ].filter(Boolean).join(" AND ");
+  const leftoverTokens = queryTokens(q).filter((t) => t.length > 2 && !isBudgetToken(t) && !(intent?.tokens || []).includes(t));
+  const skipNameMatch = leftoverTokens.length === 0 && (budgetMin || budgetMax);
 
   let rows;
   if (intent) {
@@ -244,6 +271,19 @@ export async function searchCatalogProducts(query, limit = 8, options = {}) {
       );
       rows = fallback.rows;
     }
+  } else if (skipNameMatch) {
+    const result = await client.query(
+      `${select}
+       WHERE merchant_id = $1
+         AND ${priceOk}
+         ${budgetClause ? `AND ${budgetClause}` : ""}
+       ORDER BY
+         CASE WHEN availability ILIKE '%in stock%' THEN 0 ELSE 1 END,
+         price ASC NULLS LAST
+       LIMIT $2`,
+      [config.tyaaniMerchantId, cap]
+    );
+    rows = result.rows;
   } else {
     const result = await client.query(
       `${select}
@@ -253,6 +293,7 @@ export async function searchCatalogProducts(query, limit = 8, options = {}) {
            name ILIKE $2 ESCAPE '\\'
            OR retailer_id ILIKE $2 ESCAPE '\\'
          )
+         ${budgetClause ? `AND ${budgetClause}` : ""}
        ORDER BY
          CASE WHEN name ILIKE $2 ESCAPE '\\' THEN 0 ELSE 1 END,
          CASE WHEN availability ILIKE '%in stock%' THEN 0 ELSE 1 END,
@@ -302,7 +343,7 @@ function formatInr(price) {
   return `₹${n.toLocaleString("en-IN")}`;
 }
 
-export function formatCatalogPriceReply(products, { hasAd = false, hasAdProduct = false, offer = "" } = {}) {
+export function formatCatalogPriceReply(products, { hasAd = false, hasAdProduct = false, offer = "", budgetMin = null, budgetMax = null, nearbyBudget = false } = {}) {
   const lines = (products || []).slice(0, 6).map((p) => {
     const cat = p.category ? ` (${p.category})` : "";
     return `• ${p.name}${cat} — ${formatInr(p.price)}`;
@@ -313,7 +354,12 @@ export function formatCatalogPriceReply(products, { hasAd = false, hasAdProduct 
     : hasAd
     ? "You opened from the Tyaani ad. "
     : "";
-  const intro = hasAdProduct
+  const range = [budgetMin, budgetMax].filter((n) => Number(n) > 0).map((n) => formatInr(n)).join("–");
+  const intro = nearbyBudget && range
+    ? `${lead}Nothing sat exactly in ${range}, so here are the closest pieces:`
+    : range
+    ? `${lead}Here are pieces in your ${range} range:`
+    : hasAdProduct
     ? `${lead}Here are reference prices for this design and a few similar pieces:`
     : `${lead}Here are a few pieces with reference prices:`;
   return `${intro}\n\n${lines.join("\n")}\n\nPrices can move with the gold rate and any custom work. Tell me rings, earrings, a necklace, or a budget and I’ll narrow it.`;
@@ -321,7 +367,7 @@ export function formatCatalogPriceReply(products, { hasAd = false, hasAdProduct 
 
 export function catalogReplyMissesProducts(reply, products) {
   const text = String(reply || "");
-  if (/no (specific )?product|not (currently )?in context|don't have a (specific )?product|do not have a (specific )?product|specify the (design|category)|which (design|category)|what (design|category)|does not map to one sku|shopify (catalog|reference)|featured tyaani/i.test(text)) {
+  if (/don'?t have|do not have|no (specific |catalog )?match|nothing in (this |your )?budget|no \w+ (in|within) (the |your )?budget|not available in (the )?catalog|not (currently )?in context|specify the (design|category)|which (design|category)|what (design|category)|does not map to one sku|shopify (catalog|reference)|featured tyaani/i.test(text)) {
     return true;
   }
   return !(products || []).some((p) => {
@@ -330,16 +376,23 @@ export function catalogReplyMissesProducts(reply, products) {
   });
 }
 
-export async function listFeaturedCatalogProducts(limit = 8) {
+export async function listFeaturedCatalogProducts(limit = 8, options = {}) {
   const client = getZitharaProdPool();
   if (!client) return [];
   const take = Math.min(Number(limit) || 8, 12);
+  const budgetMin = Number(options.budgetMin) || null;
+  const budgetMax = Number(options.budgetMax) || null;
+  const budgetClause = [
+    budgetMin ? `AND price >= ${Number(budgetMin)}` : "",
+    budgetMax ? `AND price <= ${Number(budgetMax)}` : "",
+  ].join(" ");
   const { rows } = await client.query(
     `${FEATURED_SELECT}
      WHERE merchant_id = $1
        AND price IS NOT NULL AND price > 500
        AND availability ILIKE '%in stock%'
        AND category = ANY($2::text[])
+       ${budgetClause}
      ORDER BY price ASC
      LIMIT $3`,
     [config.tyaaniMerchantId, ["Rings", "Earrings", "Necklaces", "Tops", "Bangles"], take * 10]
@@ -414,33 +467,6 @@ export async function searchLiveAds({ query = "", adSetIds = [], limit = 25 } = 
      ORDER BY a.updated_at DESC NULLS LAST
      LIMIT $5`,
     [config.tyaaniMerchantId, ids, q, like, Math.min(Number(limit) || 25, 50)]
-  );
-  return rows;
-}
-
-export async function listLiveAdsForImport({ limit = 1000 } = {}) {
-  const client = getZitharaProdPool();
-  if (!client) return [];
-  const take = Math.min(Math.max(Number(limit) || 1000, 1), 10_000);
-  const { rows } = await client.query(
-    `SELECT
-       a.ad_id AS "adId",
-       a.name,
-       a.adset_name AS "adsetName",
-       a.ad_set_id AS "adSetId",
-       a.status,
-       a.ad_creative_id AS "creativeId",
-       a.updated_at AS "updatedAt",
-       c.body AS "creativeBody",
-       c.title AS "creativeTitle",
-       c.call_to_action_type AS "callToActionType",
-       COALESCE(c.thumbnail_s3_url, c.thumbnail_url) AS "thumbnailUrl"
-     FROM meta_ads a
-     LEFT JOIN meta_ad_creatives c ON c.ad_creative_id = a.ad_creative_id
-     WHERE a.merchant_id = $1
-     ORDER BY a.updated_at DESC NULLS LAST
-     LIMIT $2`,
-    [config.tyaaniMerchantId, take]
   );
   return rows;
 }
