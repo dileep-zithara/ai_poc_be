@@ -37,10 +37,11 @@ export function formatStore(store) {
 
 export function storeBlock(store) {
   const resolved = store ? formatStore(store) : null;
+  const cities = TYAANI_STORES.map((s) => s.city.split(",")[0]).join(", ");
   if (!resolved) {
-    return `STORE DIRECTORY: no city matched yet. Central WhatsApp ${CENTRAL.whatsapp}. Ask which city they are in, then quote that store only.`;
+    return `STORE DIRECTORY: ${TYAANI_STORES.length} stores — ${cities}. City not matched yet. Ask which city they are in, then quote that store only. Central WhatsApp ${CENTRAL.whatsapp}.`;
   }
-  return `STORE (source of truth for this city — do not invent another address):\n${resolved.card}\nCentral line if they are not near a store: ${CENTRAL.whatsapp}`;
+  return `STORE (source of truth for this city — do not invent another address):\n${resolved.card}\nTyaani has ${TYAANI_STORES.length} stores (${cities}). Quote this store only unless they asked for the full list.\nCentral line if they are not near a store: ${CENTRAL.whatsapp}`;
 }
 
 export { CENTRAL };
