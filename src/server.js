@@ -25,23 +25,9 @@ import catalogRouter from "./routes/catalog.js";
 import { pingZitharaProd, zitharaProdConfigured } from "./services/zitharaProd.js";
 
 const app = express();
-const corsOrigins = (process.env.CORS_ORIGINS || "https://zagent.zithara.live,http://localhost:5173,http://127.0.0.1:5173")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-app.use(cors({
-  origin(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (corsOrigins.includes(origin) || corsOrigins.includes("*")) return callback(null, true);
-    try {
-      if (/(^|\.)zithara\.live$/.test(new URL(origin).hostname)) return callback(null, true);
-    } catch { /* ignore */ }
-    return callback(null, true);
-  },
-  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  maxAge: 86400,
-}));
+// CORS is handled here only. Do not also add Access-Control-Allow-Origin in Nginx
+// or the browser will reject the duplicated header.
+app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/health", async (_req, res) => {
