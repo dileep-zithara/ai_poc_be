@@ -441,6 +441,10 @@ export async function listAdSets(query = "") {
   return rows;
 }
 
+export async function listLiveAdsForImport({ query = "", adSetIds = [], limit = 250 } = {}) {
+  return searchLiveAds({ query, adSetIds, limit: Math.min(Number(limit) || 250, 400) });
+}
+
 export async function searchLiveAds({ query = "", adSetIds = [], limit = 25 } = {}) {
   const client = getZitharaProdPool();
   if (!client) return [];
@@ -466,7 +470,7 @@ export async function searchLiveAds({ query = "", adSetIds = [], limit = 25 } = 
        )
      ORDER BY a.updated_at DESC NULLS LAST
      LIMIT $5`,
-    [config.tyaaniMerchantId, ids, q, like, Math.min(Number(limit) || 25, 50)]
+    [config.tyaaniMerchantId, ids, q, like, Math.min(Number(limit) || 25, 400)]
   );
   return rows;
 }
