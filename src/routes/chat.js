@@ -4,13 +4,14 @@ import { retrieveKB, kbIndexReady } from "../services/kbIndex.js";
 import { generateResponse } from "../services/llmService.js";
 import { findAdContext } from "./adContext.js";
 import { getAgentSettings } from "./agentSettings.js";
-import { catalogReplyMissesProducts, formatCatalogPriceReply, getAdReferralContext, getProductsByNames, isPriceAsk, listFeaturedCatalogProducts, searchCatalogProducts, shouldSearchCatalog, zitharaProdConfigured } from "../services/zitharaProd.js";
+import { catalogReplyMissesProducts, filterByBudget, formatCatalogPriceReply, getAdReferralContext, getProductsByNames, listFeaturedCatalogProducts, searchCatalogProducts, shouldSearchCatalog, zitharaProdConfigured } from "../services/zitharaProd.js";
 import {
   catalogQueryForSession,
   parseMessageSignals,
   phonePolicy,
   readSession,
   updateSessionContext,
+  wantsStoreInfo,
 } from "../services/sessionContext.js";
 import { findStore, formatStore, storeBlock } from "../services/storeDirectory.js";
 import { parseWebhook } from "../services/webhookPayload.js";
@@ -134,16 +135,21 @@ router.post("/", async (req, res) => {
 
     const plan = catalogQueryForSession(message || "", session, signals, activeContext);
     let catalogProducts = [];
+    let nearbyBudget = false;
     const catalogTriggered = settings.productCatalogSearch
       && zitharaProdConfigured()
-      && (shouldSearchCatalog(message, session) || Boolean(plan.categoryId) || plan.featured || plan.reuseLast);
+      && (shouldSearchCatalog(message, session) || Boolean(plan.categoryId) || plan.featured || plan.reuseLast || plan.preferLastShown);
     if (catalogTriggered) {
       try {
         if (plan.reuseLast && session.lastShownProducts?.length) {
           catalogProducts = await getProductsByNames(session.lastShownProducts.map((p) => p.name), 8);
           if (!catalogProducts.length) catalogProducts = session.lastShownProducts;
+          catalogProducts = filterByBudget(catalogProducts, session.budgetMin, session.budgetMax);
         } else if (plan.featured) {
-          catalogProducts = await listFeaturedCatalogProducts(8);
+          catalogProducts = await listFeaturedCatalogProducts(8, {
+            budgetMin: session.budgetMin,
+            budgetMax: session.budgetMax,
+          });
         } else {
           catalogProducts = await searchCatalogProducts(plan.query || session.category || message, 8, {
             categoryId: plan.categoryId,
@@ -151,6 +157,22 @@ router.post("/", async (req, res) => {
             budgetMax: session.budgetMax,
             offset: plan.offset,
           });
+        }
+        if ((plan.preferLastShown || signals.budgetMin != null || signals.budgetMax != null) && session.lastShownProducts?.length) {
+          const kept = filterByBudget(session.lastShownProducts, session.budgetMin, session.budgetMax);
+          if (kept.length) {
+            const fresh = await getProductsByNames(kept.map((p) => p.name), 8);
+            const ranked = filterByBudget(fresh.length ? fresh : kept, session.budgetMin, session.budgetMax);
+            const seen = new Set(ranked.map((p) => String(p.name || "").toLowerCase()));
+            catalogProducts = [...ranked, ...catalogProducts.filter((p) => !seen.has(String(p.name || "").toLowerCase()))].slice(0, 8);
+          }
+        }
+        if (!catalogProducts.length && (session.budgetMin || session.budgetMax) && (plan.categoryId || session.category)) {
+          catalogProducts = await searchCatalogProducts(plan.categoryId || session.category, 8, {
+            categoryId: plan.categoryId || session.category,
+            offset: 0,
+          });
+          nearbyBudget = catalogProducts.length > 0;
         }
         if (signals.showMore) session.catalogOffset = (session.catalogOffset || 0) + catalogProducts.length;
       } catch (err) {
@@ -170,14 +192,20 @@ router.post("/", async (req, res) => {
     const rawKb = await retrieveKB(message || attachmentMarker, 6);
     const kbChunks = catalogProducts.length ? policyKbChunks(rawKb) : rawKb;
     const store = formatStore(findStore(session.city || message || "") || (session.storeId ? findStore(session.storeId) : null));
-    const phone = phonePolicy(channel, session);
+    const phone = phonePolicy(channel, session, { wantsCall: signals.scheduleCall });
+    const storeText = signals.scheduleCall || wantsStoreInfo(message)
+      ? storeBlock(store)
+      : store
+        ? `STORE NOTE: session city is ${store.city}. Do not mention the store, address, hours, or a callback unless they asked.`
+        : "STORE NOTE: city unknown. Do not ask for their city or offer a call unless they asked about a store or a callback.";
 
     const result = await generateResponse(effectiveMessage, kbChunks, activeContext, history, catalogProducts, {
       session,
       store,
-      storeText: storeBlock(store),
+      storeText,
       phone,
       catalogPrimary: catalogProducts.length > 0,
+      nearbyBudget,
     });
 
     const askedForHuman = /\b(agent|human|person|executive|talk to (someone|a person))\b/i.test(message || "");
@@ -191,11 +219,14 @@ router.post("/", async (req, res) => {
       result.handoff_reason = "";
     }
 
-    if (isPriceAsk(message) && catalogProducts.length && catalogReplyMissesProducts(result.reply, catalogProducts)) {
+    if (catalogProducts.length && catalogReplyMissesProducts(result.reply, catalogProducts)) {
       result.reply = formatCatalogPriceReply(catalogProducts, {
         hasAd: Boolean(activeContext?.adId || activeContext?.productName),
         hasAdProduct: Boolean(activeContext?.productName),
         offer: activeContext?.referralHeadline || "",
+        budgetMin: session.budgetMin,
+        budgetMax: session.budgetMax,
+        nearbyBudget,
       });
       result.handoff_needed = false;
       result.handoff_reason = "";
