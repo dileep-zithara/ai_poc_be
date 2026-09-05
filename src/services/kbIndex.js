@@ -29,12 +29,15 @@ export async function buildKBIndex() {
 }
 
 /** Retrieve top-N KB chunks for a query. Rebuild the index after any ingestion. */
+const POLICY_QUERY = /\b(return|refund|ship|store|polki|buyback|voucher|cancel|duty|track|care|hallmark)\b/i;
+
 export async function retrieveKB(query, limit = 6) {
-  if (!fuse) throw new Error("KB index not built — call buildKBIndex() first");
-  if (query.trim().length < MIN_QUERY_LENGTH) return [];
+  if (!fuse) return [];
+  const text = String(query || "").trim();
+  if (text.length < MIN_QUERY_LENGTH && !POLICY_QUERY.test(text)) return [];
 
   if (databaseCapabilities.isPostgres && embeddingsConfigured()) {
-    const embedding = await embedText(query);
+    const embedding = await embedText(text);
     if (embedding) {
       const vector = `[${embedding.join(",")}]`;
       return sequelize.query(
@@ -48,10 +51,14 @@ export async function retrieveKB(query, limit = 6) {
     }
   }
 
-  return fuse.search(query, { limit }).map((r) => r.item);
+  return fuse.search(text, { limit }).map((r) => r.item);
 }
 
 export function kbIndexReady() {
   return fuse !== null;
+}
+
+export function kbHasChunks() {
+  return Boolean(fuse);
 }
 

@@ -12,6 +12,8 @@ import "./models/BusinessProfile.js";
 import "./models/AgentSettings.js";
 import "./models/AdCatalogEntry.js";
 import { buildKBIndex, kbIndexReady } from "./services/kbIndex.js";
+import { seedOfficialTyaaniKb } from "./data/tyaaniFacts.js";
+import { loadStoreDirectory } from "./services/storeDirectory.js";
 import documentsRouter from "./routes/documents.js";
 import adContextRouter from "./routes/adContext.js";
 import chatRouter from "./routes/chat.js";
@@ -28,7 +30,7 @@ const app = express();
 // CORS is handled here only. Do not also add Access-Control-Allow-Origin in Nginx
 // or the browser will reject the duplicated header.
 app.use(cors());
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "12mb" }));
 
 app.get("/health", async (_req, res) => {
   const prod = zitharaProdConfigured() ? await pingZitharaProd() : { configured: false, ok: false };
@@ -51,7 +53,10 @@ async function start() {
   // uses alter mode for frictionless local development.
   await sequelize.sync(databaseCapabilities.isPostgres ? {} : { alter: true });
   await migrateDatabase();
-  await buildKBIndex(); // picks up whatever's already ingested
+  const seeded = await seedOfficialTyaaniKb();
+  await buildKBIndex();
+  await loadStoreDirectory();
+  if (seeded) console.log(`[tyaani] official knowledge ready — ${seeded} facts, ${kbIndexReady() ? "kb indexed" : "kb empty"}`);
   app.listen(config.port, () => {
     console.log(`ai-layer backend listening on :${config.port}`);
     resumePendingWebSources().catch((err) => console.error("[webSources] resume failed:", err.message));

@@ -41,7 +41,7 @@ async function callWithRetry(kind, args, retries = 1) {
  * rate-limited, or misconfigured doesn't take the whole chat down.
  * @param {{ systemPrompt: string, tool: object, messages: Array }} args
  */
-export async function callLLM({ systemPrompt, tool, messages }) {
+export async function callLLM({ systemPrompt, tool, messages, media = null }) {
   const chain = await getFallbackChain();
   if (chain.length === 0) throw new Error("No LLM provider has an API key configured");
 
@@ -55,6 +55,7 @@ export async function callLLM({ systemPrompt, tool, messages }) {
         systemPrompt,
         tool,
         messages,
+        media,
       });
     } catch (err) {
       console.error(`[llm] provider "${entry.provider}" failed:`, err.message);

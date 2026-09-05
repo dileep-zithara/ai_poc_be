@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
+import { geminiParts } from "../media.js";
 
 // Converts our JSON-Schema-style tool.input_schema into Gemini's Schema format.
 function toGeminiSchema(schema) {
@@ -13,8 +14,8 @@ function toGeminiSchema(schema) {
   return { type: SchemaType.STRING, description: schema.description };
 }
 
-/** @param {{ apiKey: string, model: string, systemPrompt: string, tool: object, messages: Array }} args */
-export async function callGemini({ apiKey, model, systemPrompt, tool, messages }) {
+/** @param {{ apiKey: string, model: string, systemPrompt: string, tool: object, messages: Array, media?: object }} args */
+export async function callGemini({ apiKey, model, systemPrompt, tool, messages, media }) {
   const genAI = new GoogleGenerativeAI(apiKey);
   const geminiModel = genAI.getGenerativeModel({
     model,
@@ -30,7 +31,7 @@ export async function callGemini({ apiKey, model, systemPrompt, tool, messages }
   const last = messages[messages.length - 1];
 
   const chat = geminiModel.startChat({ history });
-  const result = await chat.sendMessage(last.content);
+  const result = await chat.sendMessage(geminiParts(last.content, media));
   const call = result.response.functionCalls()?.[0];
   if (!call) throw new Error("Gemini did not return a function call");
   return call.args;

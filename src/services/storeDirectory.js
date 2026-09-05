@@ -1,5 +1,17 @@
-/** Store directory built from the imported / edited Business Profile. */
+/** Store directory: official Tyaani list, overlaid by Business Profile when present. */
 import { displayWhatsApp } from "../config.js";
+import { TYAANI_CONTACTS, TYAANI_EMAIL, TYAANI_OFFICIAL_STORES } from "../data/tyaaniFacts.js";
+
+function officialDirectory() {
+  return {
+    stores: TYAANI_OFFICIAL_STORES.map((store) => ({
+      ...store,
+      whatsapp: store.phone || TYAANI_CONTACTS.whatsapp,
+    })),
+    brand: "Tyaani",
+    central: { whatsapp: TYAANI_CONTACTS.whatsapp, email: TYAANI_EMAIL },
+  };
+}
 
 function lines(value) {
   return String(value || "").split(/\n+/).map((line) => line.trim()).filter(Boolean);
@@ -74,11 +86,19 @@ export function parseStoresFromProfile(profile = {}) {
   };
 }
 
-let directory = { stores: [], brand: "", central: { whatsapp: displayWhatsApp(), email: "" } };
+let directory = officialDirectory();
 
 export function hydrateStoreDirectory(profile) {
-  directory = parseStoresFromProfile(profile || {});
-  if (!directory.central.whatsapp) directory.central.whatsapp = displayWhatsApp();
+  const fromProfile = parseStoresFromProfile(profile || {});
+  const base = officialDirectory();
+  directory = {
+    ...base,
+    brand: fromProfile.brand || base.brand,
+    central: {
+      whatsapp: base.central.whatsapp,
+      email: fromProfile.central.email || base.central.email,
+    },
+  };
   return directory;
 }
 
@@ -112,7 +132,7 @@ export function formatStore(store) {
   return {
     ...store,
     maps: mapsLink(store),
-    card: `${store.city}\n${store.address || ""}\nHours: ${store.hours || "not listed"}\nWhatsApp: ${store.whatsapp || directory.central.whatsapp || displayWhatsApp()}\nMap: ${mapsLink(store)}`,
+    card: `${store.city}\n${store.address || ""}\nHours: ${store.hours || "not listed"}\nPhone: ${store.phone || store.whatsapp || directory.central.whatsapp || displayWhatsApp()}\nMap: ${mapsLink(store)}`,
   };
 }
 
@@ -122,7 +142,7 @@ export function storeBlock(store) {
   const cities = directory.stores.map((s) => s.city.split(",")[0]).join(", ");
   const central = ` Central WhatsApp ${directory.central.whatsapp || displayWhatsApp()}.`;
   if (!directory.stores.length) {
-    return `STORE DIRECTORY: no stores in the business profile yet. Quote Central WhatsApp ${directory.central.whatsapp || displayWhatsApp()} if they ask how to reach us. Do not invent addresses.`;
+    return `STORE DIRECTORY: use official Tyaani stores. Central WhatsApp ${directory.central.whatsapp || displayWhatsApp()}. Do not invent addresses.`;
   }
   if (!resolved) {
     return `STORE DIRECTORY: ${directory.stores.length} stores — ${cities}. City not matched yet. Ask which city they are in, then quote that store only.${central}`;
@@ -130,5 +150,5 @@ export function storeBlock(store) {
   return `STORE (source of truth for this city — do not invent another address):\n${resolved.card}\n${brand} has ${directory.stores.length} stores (${cities}). Quote this store only unless they asked for the full list.${central}`;
 }
 
-export const TYAANI_STORES = [];
-export const CENTRAL = { whatsapp: displayWhatsApp(), email: "" };
+export const TYAANI_STORES = TYAANI_OFFICIAL_STORES;
+export const CENTRAL = { whatsapp: TYAANI_CONTACTS.whatsapp, email: TYAANI_EMAIL };

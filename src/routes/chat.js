@@ -1,8 +1,9 @@
 import { Router } from "express";
 import { Conversation } from "../models/Conversation.js";
-import { retrieveKB, kbIndexReady } from "../services/kbIndex.js";
+import { retrieveKB } from "../services/kbIndex.js";
 import { fallbackCustomerReply, generateResponse, isBrokenReply } from "../services/llmService.js";
-import { displayWhatsApp } from "../config.js";
+import { isPolicyAsk, matchOfficialAnswer, officialFollowUp, TYAANI_CONTACTS, wantsCorrection } from "../data/tyaaniFacts.js";
+import { attachmentMedia } from "../services/llm/media.js";
 import { findAdContext } from "./adContext.js";
 import { getAgentSettings } from "./agentSettings.js";
 import { catalogReplyMissesProducts, filterByBudget, formatCatalogPriceReply, getAdReferralContext, getProductsByNames, listFeaturedCatalogProducts, normalizeCatalogProduct, searchCatalogProducts, shouldSearchCatalog, zitharaProdConfigured } from "../services/zitharaProd.js";
@@ -62,7 +63,6 @@ router.post("/", async (req, res) => {
       }
     }
     if (!message?.trim() && !attachment?.type) return res.status(400).json({ error: "message or attachment is required" });
-    if (!kbIndexReady()) return res.status(503).json({ error: "KB not ingested yet — upload a document first" });
 
     const settings = await getAgentSettings();
     if (!settings.aiEnabled) {
@@ -123,7 +123,12 @@ router.post("/", async (req, res) => {
     }
 
     const history = JSON.parse(convo.history);
-    const hasImage = /image|sticker/.test(String(attachment?.type || parsedWebhook?.event || ""));
+    const mediaType = String(attachment?.type || parsedWebhook?.event || "");
+    const hasImage = /image|sticker/.test(mediaType);
+    const hasAudio = mediaType === "audio";
+    const hasVideo = mediaType === "video";
+    const media = attachmentMedia(attachment);
+    const correcting = wantsCorrection(message || "");
     const attachmentMarker = attachment?.type
       ? `[Customer sent a${attachment.type === "image" ? "n" : ""} ${attachment.type}${attachment.name ? ` named "${attachment.name}"` : ""}]`
       : "";
@@ -132,7 +137,7 @@ router.post("/", async (req, res) => {
     const signals = parseMessageSignals(message || "");
 
     let session = updateSessionContext({
-      session: readSession(convo),
+      session: { ...readSession(convo), nudgedAt: null },
       channel,
       signals,
       adContext: activeContext,
@@ -208,7 +213,7 @@ router.post("/", async (req, res) => {
 
     let rawKb = [];
     try {
-      rawKb = await retrieveKB(message || attachmentMarker, 6);
+      rawKb = await retrieveKB(message || attachmentMarker, correcting || isPolicyAsk(message) ? 10 : 6);
     } catch (err) {
       console.warn("[chat] kb retrieve failed:", err.message);
     }
@@ -231,8 +236,12 @@ router.post("/", async (req, res) => {
       greetNow,
       settings,
       hasImage,
+      hasAudio,
+      hasVideo,
+      media,
+      wantsCorrection: correcting,
       hasAd: Boolean(activeContext?.adId || activeContext?.productName),
-      centralWhatsApp: displayWhatsApp(),
+      centralWhatsApp: TYAANI_CONTACTS.whatsapp,
     });
 
     const askedForHuman = /\b(agent|human|person|executive|talk to (someone|a person))\b/i.test(message || "");
@@ -258,13 +267,13 @@ router.post("/", async (req, res) => {
       result.handoff_needed = false;
       result.handoff_reason = "";
     }
-    if (isBrokenReply(result.reply)) {
+    if (isBrokenReply(result.reply) || (isPolicyAsk(effectiveMessage) && !catalogProducts.length && matchOfficialAnswer(effectiveMessage) && /sorry|something went wrong|not sure|don't have (that|this) (info|information)/i.test(result.reply || ""))) {
       const fallback = fallbackCustomerReply(effectiveMessage, catalogProducts, {
         session,
         nearbyBudget,
         hasImage,
         hasAd: Boolean(activeContext?.adId || activeContext?.productName),
-        centralWhatsApp: displayWhatsApp(),
+        centralWhatsApp: TYAANI_CONTACTS.whatsapp,
       });
       result.reply = fallback.reply;
       result.handoff_needed = false;
@@ -296,7 +305,7 @@ router.post("/", async (req, res) => {
     });
   } catch (err) {
     console.error("[chat] error:", err);
-    const fallback = fallbackCustomerReply(req.body?.message || "", [], { centralWhatsApp: displayWhatsApp() });
+    const fallback = fallbackCustomerReply(req.body?.message || "", [], { centralWhatsApp: TYAANI_CONTACTS.whatsapp });
     res.json({
       reply: fallback.reply,
       handoff: { needed: false },
@@ -311,6 +320,47 @@ router.post("/reset", async (req, res) => {
   const { sessionId = "anonymous" } = req.body;
   await Conversation.destroy({ where: { sessionId } });
   res.json({ ok: true });
+});
+
+/** Conversations waiting for a 2-minute (or configured) silence follow-up. The WhatsApp connector should send `message`. */
+router.get("/follow-ups", async (_req, res) => {
+  const settings = await getAgentSettings();
+  if (!settings.aiNudgeEnabled) return res.json({ items: [] });
+  const delayMs = Math.max(Number(settings.nudgeDelayMinutes) || 2, 1) * 60 * 1000;
+  const rows = await Conversation.findAll({ where: { handoffActive: false } });
+  const items = [];
+  for (const convo of rows) {
+    let history = [];
+    try { history = JSON.parse(convo.history || "[]"); } catch { continue; }
+    if (history[history.length - 1]?.role !== "assistant") continue;
+    const session = readSession(convo);
+    if (session.nudgedAt) continue;
+    const idle = Date.now() - new Date(convo.updatedAt).getTime();
+    if (idle < delayMs) continue;
+    items.push({
+      sessionId: convo.sessionId,
+      channel: convo.channel,
+      idleMinutes: Math.round(idle / 60000),
+      message: officialFollowUp(settings),
+    });
+  }
+  res.json({ items });
+});
+
+router.post("/follow-up", async (req, res) => {
+  const { sessionId } = req.body || {};
+  if (!sessionId) return res.status(400).json({ error: "sessionId is required" });
+  const settings = await getAgentSettings();
+  const convo = await Conversation.findOne({ where: { sessionId } });
+  if (!convo) return res.status(404).json({ error: "conversation not found" });
+  const history = JSON.parse(convo.history || "[]");
+  const message = officialFollowUp(settings);
+  history.push({ role: "assistant", content: message });
+  const session = { ...readSession(convo), nudgedAt: new Date().toISOString() };
+  convo.history = JSON.stringify(history);
+  convo.sessionContext = JSON.stringify(session);
+  await convo.save();
+  res.json({ ok: true, sessionId, message, channel: convo.channel });
 });
 
 export default router;

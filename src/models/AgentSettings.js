@@ -11,7 +11,7 @@ export const AgentSettings = sequelize.define("AgentSettings", {
   humanHandoffEnabled: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
   productCatalogSearch: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
   aiNudgeEnabled: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
-  nudgeDelayMinutes: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 60 },
+  nudgeDelayMinutes: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 2 },
   nudgeMessage: { type: DataTypes.TEXT, allowNull: false, defaultValue: "Hi, is there anything else I can help you with?" },
   agentName: { type: DataTypes.STRING, allowNull: false, defaultValue: "Tyaani" },
   agentGender: { type: DataTypes.STRING, allowNull: false, defaultValue: "female" },

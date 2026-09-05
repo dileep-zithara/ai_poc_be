@@ -4,7 +4,7 @@ import { Conversation } from "../models/Conversation.js";
 
 const SINGLETON_ID = 1;
 const BOOL_FIELDS = ["aiEnabled", "shadowMode", "humanHandoffEnabled", "productCatalogSearch", "aiNudgeEnabled"];
-const NUDGE_MIN_DELAY = 5;
+const NUDGE_MIN_DELAY = 1;
 const NUDGE_MAX_DELAY = 10080;
 
 const router = Router();
