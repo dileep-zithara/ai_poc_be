@@ -1,10 +1,12 @@
 import { Router } from "express";
 import { Conversation } from "../models/Conversation.js";
 import { retrieveKB, kbIndexReady } from "../services/kbIndex.js";
-import { generateResponse } from "../services/llmService.js";
+import { fallbackCustomerReply, generateResponse, isBrokenReply } from "../services/llmService.js";
+import { displayWhatsApp } from "../config.js";
 import { findAdContext } from "./adContext.js";
 import { getAgentSettings } from "./agentSettings.js";
-import { catalogReplyMissesProducts, filterByBudget, formatCatalogPriceReply, getAdReferralContext, getProductsByNames, listFeaturedCatalogProducts, searchCatalogProducts, shouldSearchCatalog, zitharaProdConfigured } from "../services/zitharaProd.js";
+import { catalogReplyMissesProducts, filterByBudget, formatCatalogPriceReply, getAdReferralContext, getProductsByNames, listFeaturedCatalogProducts, normalizeCatalogProduct, searchCatalogProducts, shouldSearchCatalog, zitharaProdConfigured } from "../services/zitharaProd.js";
+import { BusinessProfile } from "../models/BusinessProfile.js";
 import {
   catalogQueryForSession,
   parseMessageSignals,
@@ -24,7 +26,7 @@ function policyKbChunks(chunks) {
 
 router.post("/", async (req, res) => {
   try {
-    let { sessionId = "anonymous", message, adId, cardId, channel = "web", attachment, referral, customerPhone, webhook } = req.body;
+    let { sessionId = "anonymous", message, adId, cardId, channel = "web", attachment, referral, customerPhone, customerName, webhook } = req.body;
     let parsedWebhook = null;
     let customerId = null;
     if (webhook) {
@@ -121,6 +123,7 @@ router.post("/", async (req, res) => {
     }
 
     const history = JSON.parse(convo.history);
+    const hasImage = /image|sticker/.test(String(attachment?.type || parsedWebhook?.event || ""));
     const attachmentMarker = attachment?.type
       ? `[Customer sent a${attachment.type === "image" ? "n" : ""} ${attachment.type}${attachment.name ? ` named "${attachment.name}"` : ""}]`
       : "";
@@ -139,12 +142,12 @@ router.post("/", async (req, res) => {
       catalogProducts: [],
     });
 
-    const plan = catalogQueryForSession(message || "", session, signals, activeContext);
+    const plan = catalogQueryForSession(message || "", session, signals, activeContext, { hasImage });
     let catalogProducts = [];
     let nearbyBudget = false;
     const catalogTriggered = settings.productCatalogSearch
       && zitharaProdConfigured()
-      && (shouldSearchCatalog(message, session) || Boolean(plan.categoryId) || plan.featured || plan.reuseLast || plan.preferLastShown);
+      && (hasImage || shouldSearchCatalog(message, session) || Boolean(plan.categoryId) || plan.featured || plan.reuseLast || plan.preferLastShown);
     if (catalogTriggered) {
       try {
         if (plan.reuseLast && session.lastShownProducts?.length) {
@@ -186,6 +189,9 @@ router.post("/", async (req, res) => {
       }
     }
 
+    const profile = await BusinessProfile.findByPk(1);
+    catalogProducts = catalogProducts.map((row) => normalizeCatalogProduct(row, profile?.website));
+
     session = updateSessionContext({
       session,
       channel,
@@ -200,7 +206,12 @@ router.post("/", async (req, res) => {
     const priorAssistant = history.filter((row) => row.role === "assistant").length;
     const greetNow = priorAssistant === 0 || /^(hi|hii+|hello|hey|namaste|good (morning|afternoon|evening))\b/i.test(String(message || "").trim());
 
-    const rawKb = await retrieveKB(message || attachmentMarker, 6);
+    let rawKb = [];
+    try {
+      rawKb = await retrieveKB(message || attachmentMarker, 6);
+    } catch (err) {
+      console.warn("[chat] kb retrieve failed:", err.message);
+    }
     const kbChunks = catalogProducts.length ? policyKbChunks(rawKb) : rawKb;
     const store = formatStore(findStore(session.city || message || "") || (session.storeId ? findStore(session.storeId) : null));
     const phone = phonePolicy(channel, session, { wantsCall: signals.scheduleCall });
@@ -218,6 +229,10 @@ router.post("/", async (req, res) => {
       catalogPrimary: catalogProducts.length > 0,
       nearbyBudget,
       greetNow,
+      settings,
+      hasImage,
+      hasAd: Boolean(activeContext?.adId || activeContext?.productName),
+      centralWhatsApp: displayWhatsApp(),
     });
 
     const askedForHuman = /\b(agent|human|person|executive|talk to (someone|a person))\b/i.test(message || "");
@@ -240,6 +255,18 @@ router.post("/", async (req, res) => {
         budgetMax: session.budgetMax,
         nearbyBudget,
       });
+      result.handoff_needed = false;
+      result.handoff_reason = "";
+    }
+    if (isBrokenReply(result.reply)) {
+      const fallback = fallbackCustomerReply(effectiveMessage, catalogProducts, {
+        session,
+        nearbyBudget,
+        hasImage,
+        hasAd: Boolean(activeContext?.adId || activeContext?.productName),
+        centralWhatsApp: displayWhatsApp(),
+      });
+      result.reply = fallback.reply;
       result.handoff_needed = false;
       result.handoff_reason = "";
     }
@@ -269,7 +296,14 @@ router.post("/", async (req, res) => {
     });
   } catch (err) {
     console.error("[chat] error:", err);
-    res.status(500).json({ error: "Something went wrong." });
+    const fallback = fallbackCustomerReply(req.body?.message || "", [], { centralWhatsApp: displayWhatsApp() });
+    res.json({
+      reply: fallback.reply,
+      handoff: { needed: false },
+      resolvedProduct: null,
+      usedKBChunks: [],
+      usedCatalogProducts: [],
+    });
   }
 });
 

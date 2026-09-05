@@ -6,6 +6,7 @@ import { crawlSite, mergeSignals } from "../services/webCrawler.js";
 import { hydrateStoreDirectory } from "../services/storeDirectory.js";
 import { buildKBIndex } from "../services/kbIndex.js";
 import { callLLM } from "../services/llm/index.js";
+import { displayWhatsApp } from "../config.js";
 
 const SINGLETON_ID = 1;
 const FIELDS = [
@@ -133,7 +134,7 @@ function heuristicProfile(pages, signals, website) {
       collectionHint.length ? `Collections on the site: ${collectionHint.join(", ")}` : "",
     ].filter(Boolean).join("\n\n"),
     contactInfo: [
-      central ? `Central WhatsApp: ${central.phone}` : "",
+      `Central WhatsApp: ${central?.phone || displayWhatsApp()}`,
       signals.emails.length ? `Email: ${signals.emails.join(", ")}` : "",
       waLines.length ? `Store WhatsApp:\n${[...new Set(waLines)].join("\n")}` : "",
     ].filter(Boolean).join("\n"),
@@ -142,7 +143,7 @@ function heuristicProfile(pages, signals, website) {
     website,
     socialLinks: [...signals.social, ...signals.emails].join("\n"),
     aiInstructions: businessName
-      ? `You represent ${businessName} (${website}). Use catalog prices; do not invent SKUs or discounts. For store visits, quote the WhatsApp number for the customer's city when known, otherwise the central line. Only state shipping, returns, exchange, or buyback as written in the indexed policies.`
+      ? `You represent ${businessName} (${website}). Use catalog prices; do not invent SKUs or discounts. For store visits, quote the WhatsApp number for the customer's city when known, otherwise Central WhatsApp ${displayWhatsApp()}. Only state shipping, returns, exchange, or buyback as written in the indexed policies.`
       : "",
   };
 }

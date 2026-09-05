@@ -1,3 +1,4 @@
+import { displayWhatsApp } from "../config.js";
 import { detectCategoryIntent, isPriceAsk } from "./zitharaProd.js";
 import { findStore } from "./storeDirectory.js";
 import { firstNameFromProfile } from "./webhookPayload.js";
@@ -70,6 +71,7 @@ export function parseBudget(message) {
   const text = String(message || "")
     .toLowerCase()
     .replace(/₹/g, " ")
+    .replace(/\b(?:18|22)\s*k(?:t)?\b/g, " ")
     .replace(/\b(?:rs\.?|inr|rupees?)\b/g, " ");
 
   const between = text.match(new RegExp(`between\\s*${NUM}\\s*${UNIT}\\s*(?:and|to|–|-)\\s*${NUM}\\s*${UNIT}`));
@@ -83,10 +85,23 @@ export function parseBudget(message) {
   }
 
   const cap = text.match(new RegExp(
-    `(?:under|below|upto|up\\s*to|within|around|about|till|until|max(?:imum)?|budget(?:\\s+is|\\s+of)?)\\s*${NUM}\\s*${UNIT}`
+    `(?:under|below|upto|up\\s*to|within|around|about|till|until|max(?:imum)?|budget(?:\\s+is|\\s+of)?|(?:mera|meri|my)\\s+budget)\\s*${NUM}\\s*${UNIT}`
   ));
   if (cap) {
     return { budgetMin: null, budgetMax: toBudgetAmount(cap[1], cap[2]) };
+  }
+
+  const trailing = text.match(new RegExp(`${NUM}\\s*${UNIT}\\s*(?:budget|only|max|tak)\\b`));
+  if (trailing) {
+    return { budgetMin: null, budgetMax: toBudgetAmount(trailing[1], trailing[2]) };
+  }
+
+  const standalone = text.match(new RegExp(`(?:^|\\s)${NUM}\\s*(k|lakh|lac|l|thousand|hazar)\\b`));
+  if (standalone && /budget|under|below|upto|price|range|around|tak|ke (andar|neeche)|within/i.test(String(message || ""))) {
+    return { budgetMin: null, budgetMax: toBudgetAmount(standalone[1], standalone[2]) };
+  }
+  if (standalone && new RegExp(`^\\s*${NUM}\\s*(k|lakh|lac|l|thousand|hazar)\\s*$`).test(text.trim())) {
+    return { budgetMin: null, budgetMax: toBudgetAmount(standalone[1], standalone[2]) };
   }
 
   return { budgetMin: null, budgetMax: null };
@@ -140,12 +155,14 @@ export function phonePolicy(channel, session, { wantsCall = false } = {}) {
     };
   }
 
+  const central = displayWhatsApp();
   const steps = `CALL FLOW (they asked to be called). One warm step at a time — no jargon:
 1) Confirm: "Happy to arrange a call with our stylist."
 2) If city is unknown, ask which city first.
 3) Confirm the number. Never say "on file" or "Instagram number".
 4) Ask morning / afternoon / evening, today or tomorrow.
-5) Close: "Our team will call you then." Do not add the store address unless they also asked to visit.`;
+5) Close: "Our team will call you then." Do not add the store address unless they also asked to visit.
+The central WhatsApp is ${central}. Use that if they want to reach us or if a city number is missing.`;
 
   if (ch === "whatsapp") {
     return {
@@ -162,7 +179,7 @@ export function phonePolicy(channel, session, { wantsCall = false } = {}) {
       number: session.phone?.number || null,
       instruction: hasPhone
         ? `${steps}\nA WhatsApp number is available (${pretty}). Ask: "Shall we reach you on ${pretty}?" Do not call it an Instagram number.`
-        : `${steps}\nNo WhatsApp number yet. Ask once: "Please share a WhatsApp number we can call."`,
+        : `${steps}\nNo WhatsApp number yet. Ask once: "Please share a WhatsApp number we can call." You can also give them ${central}.`,
     };
   }
   return {
@@ -171,7 +188,7 @@ export function phonePolicy(channel, session, { wantsCall = false } = {}) {
     number: session.phone?.number || null,
     instruction: hasPhone
       ? `${steps}\nConfirm: "Shall we reach you on ${pretty}?"`
-      : `${steps}\nAsk once for a WhatsApp number.`,
+      : `${steps}\nAsk once for a WhatsApp number, or give them ${central}.`,
   };
 }
 
@@ -243,9 +260,15 @@ export function updateSessionContext({ session, channel, signals, adContext, cus
 
 export { isPriceAsk };
 
-export function catalogQueryForSession(message, session, signals, adContext) {
+export function catalogQueryForSession(message, session, signals, adContext, extras = {}) {
   const budgetJustSet = signals.budgetMin != null || signals.budgetMax != null;
   const categoryId = signals.category || session.category || detectCategoryIntent(message)?.id || null;
+  if (extras.hasImage && !String(message || "").trim()) {
+    if (adContext?.productName) return { query: adContext.productName, categoryId: categoryId || null, offset: 0 };
+    if (session.category) return { query: session.category, categoryId: session.category, offset: 0 };
+    if (session.lastShownProducts?.length) return { reuseLast: true, query: "pp", preferLastShown: true };
+    return { featured: true, query: "pp" };
+  }
 
   if (signals.category && signals.category !== session.category) {
     return { query: budgetJustSet ? signals.category : message, categoryId: signals.category, offset: 0 };

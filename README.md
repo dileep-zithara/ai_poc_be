@@ -18,7 +18,7 @@ Without `DATABASE_URL` the API uses local SQLite (`ai-layer.sqlite`).
 ```bash
 cd ai_poc_be
 npm install
-cp .env.example .env   # if you add one; otherwise create .env from the table below
+# create a local .env from the table below — do not commit it
 npm run dev
 ```
 

@@ -42,6 +42,18 @@ router.put("/", async (req, res) => {
     if (!message) return res.status(400).json({ error: "Nudge message cannot be empty." });
     row.nudgeMessage = message;
   }
+  if (req.body.agentName !== undefined) {
+    const name = String(req.body.agentName || "").trim().slice(0, 40);
+    if (!name) return res.status(400).json({ error: "Agent name cannot be empty." });
+    row.agentName = name;
+  }
+  if (req.body.agentGender !== undefined) {
+    const gender = String(req.body.agentGender || "").toLowerCase();
+    if (!["female", "male", "neutral"].includes(gender)) {
+      return res.status(400).json({ error: "Gender must be female, male, or neutral." });
+    }
+    row.agentGender = gender;
+  }
   if (req.body.whatsappWabaIds) row.whatsappWabaIds = JSON.stringify(req.body.whatsappWabaIds);
   if (req.body.instagramPageIds) row.instagramPageIds = JSON.stringify(req.body.instagramPageIds);
   await row.save();

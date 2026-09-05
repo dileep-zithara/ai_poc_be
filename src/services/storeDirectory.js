@@ -1,4 +1,5 @@
 /** Store directory built from the imported / edited Business Profile. */
+import { displayWhatsApp } from "../config.js";
 
 function lines(value) {
   return String(value || "").split(/\n+/).map((line) => line.trim()).filter(Boolean);
@@ -65,17 +66,19 @@ export function parseStoresFromProfile(profile = {}) {
     })
     .filter(Boolean);
 
+  const central = centralWhatsapp || displayWhatsApp();
   return {
-    stores,
+    stores: stores.map((store) => ({ ...store, whatsapp: store.whatsapp || central })),
     brand: String(profile.businessName || "").trim(),
-    central: { whatsapp: centralWhatsapp, email },
+    central: { whatsapp: central, email },
   };
 }
 
-let directory = { stores: [], brand: "", central: { whatsapp: "", email: "" } };
+let directory = { stores: [], brand: "", central: { whatsapp: displayWhatsApp(), email: "" } };
 
 export function hydrateStoreDirectory(profile) {
   directory = parseStoresFromProfile(profile || {});
+  if (!directory.central.whatsapp) directory.central.whatsapp = displayWhatsApp();
   return directory;
 }
 
@@ -109,7 +112,7 @@ export function formatStore(store) {
   return {
     ...store,
     maps: mapsLink(store),
-    card: `${store.city}\n${store.address || ""}\nHours: ${store.hours || "not listed"}\nWhatsApp: ${store.whatsapp || "not listed"}\nMap: ${mapsLink(store)}`,
+    card: `${store.city}\n${store.address || ""}\nHours: ${store.hours || "not listed"}\nWhatsApp: ${store.whatsapp || directory.central.whatsapp || displayWhatsApp()}\nMap: ${mapsLink(store)}`,
   };
 }
 
@@ -117,9 +120,9 @@ export function storeBlock(store) {
   const resolved = store ? formatStore(store) : null;
   const brand = directory.brand || "This brand";
   const cities = directory.stores.map((s) => s.city.split(",")[0]).join(", ");
-  const central = directory.central.whatsapp ? ` Central WhatsApp ${directory.central.whatsapp}.` : "";
+  const central = ` Central WhatsApp ${directory.central.whatsapp || displayWhatsApp()}.`;
   if (!directory.stores.length) {
-    return "STORE DIRECTORY: no stores in the business profile yet. Do not invent addresses or city lists.";
+    return `STORE DIRECTORY: no stores in the business profile yet. Quote Central WhatsApp ${directory.central.whatsapp || displayWhatsApp()} if they ask how to reach us. Do not invent addresses.`;
   }
   if (!resolved) {
     return `STORE DIRECTORY: ${directory.stores.length} stores — ${cities}. City not matched yet. Ask which city they are in, then quote that store only.${central}`;
@@ -128,4 +131,4 @@ export function storeBlock(store) {
 }
 
 export const TYAANI_STORES = [];
-export const CENTRAL = { whatsapp: "", email: "" };
+export const CENTRAL = { whatsapp: displayWhatsApp(), email: "" };

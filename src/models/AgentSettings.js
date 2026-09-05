@@ -13,6 +13,8 @@ export const AgentSettings = sequelize.define("AgentSettings", {
   aiNudgeEnabled: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
   nudgeDelayMinutes: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 60 },
   nudgeMessage: { type: DataTypes.TEXT, allowNull: false, defaultValue: "Hi, is there anything else I can help you with?" },
+  agentName: { type: DataTypes.STRING, allowNull: false, defaultValue: "Tyaani" },
+  agentGender: { type: DataTypes.STRING, allowNull: false, defaultValue: "female" },
   whatsappWabaIds: { type: DataTypes.TEXT, allowNull: false, defaultValue: "[]" },
   instagramPageIds: { type: DataTypes.TEXT, allowNull: false, defaultValue: "[]" },
 });

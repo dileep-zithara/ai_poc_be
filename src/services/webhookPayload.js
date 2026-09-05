@@ -66,6 +66,7 @@ function parseWhatsAppMessage(msg, phoneFromContact, profileName) {
   const type = String(msg.type || "text");
   const phone = msg.from || phoneFromContact || null;
   const customerName = profileName || msg.profile?.name || null;
+  const wmaid = msg.wmaid || msg.wamid || msg.id || null;
   const referral = waReferral(msg.referral);
   let message = "";
   let attachment = null;
@@ -95,8 +96,7 @@ function parseWhatsAppMessage(msg, phoneFromContact, profileName) {
   }
 
   if (!message && referral) message = referral.welcomeText || "Hi";
-  return ok("whatsapp", { message, phone, customerName, referral, attachment, event: type });
-}
+  return ok("whatsapp", { message, phone, customerName, referral, attachment, event: type, wmaid });
 
 function parseWhatsAppWrapped(body) {
   const change = first(first(body.entry)?.changes);

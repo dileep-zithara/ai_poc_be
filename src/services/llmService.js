@@ -1,4 +1,6 @@
+import { displayWhatsApp } from "../config.js";
 import { callLLM } from "./llm/index.js";
+import { formatCatalogPriceReply } from "./zitharaProd.js";
 
 const SYSTEM_PROMPT = `You are the WhatsApp / Instagram / web sales assistant for Tyaani
 Jewellery (tyaani.com) — 18KT / 22KT Polki, Jadau, diamond and gold jewellery
@@ -72,7 +74,33 @@ CATALOG RULES:
   such as rings or earrings. Never say the request is not covered in context.
   Only hand off if they ask for a person or an invoice that only a human can lock.
 
+5) PHOTOS / SCREENSHOTS
+- If they sent a photo or screenshot, do not say sorry and do not claim you
+  identified the exact SKU from the image.
+- Thank them, quote PRODUCT CATALOG MATCHES if present, ask rings / earrings /
+  necklace and a budget, and give WhatsApp ${displayWhatsApp()} so a stylist
+  can confirm from the picture.
+
+6) HUMAN HELP
+- The central WhatsApp is ${displayWhatsApp()}. Use this for human help, when
+  a city store number is missing, and when you cannot answer from catalog or KB.
+- Never say "Sorry, something went wrong" or "let me connect you with our team"
+  without giving that WhatsApp number.
+
 Never invent stock, delivery dates, discounts, or store addresses.`;
+
+function voiceBlock(settings) {
+  const name = String(settings?.agentName || "Tyaani").trim() || "Tyaani";
+  const gender = String(settings?.agentGender || "female").toLowerCase();
+  const forms = gender === "male"
+    ? "Use masculine first-person grammar in that language (verb endings, adjectives, participles)."
+    : gender === "neutral"
+    ? "Avoid gendered self-reference. Prefer phrasing that does not mark the speaker as male or female."
+    : "Use feminine first-person grammar in that language (verb endings, adjectives, participles).";
+  return `AGENT VOICE: Your name is ${name}. Gender for speech: ${gender}. ${forms}
+Reply in the customer's language and script — Hindi, Telugu, Kannada, Tamil, Malayalam, Marathi, Gujarati, Bengali, French, English, or any other they used. Do not switch them to English or Hindi unless they wrote that.
+If they ask your name, say ${name}. Do not sign every message with the name.`;
+}
 
 const RESPOND_TOOL = {
   name: "respond_to_customer",
@@ -112,11 +140,11 @@ function catalogBlock(catalogProducts, catalogPrimary) {
   const rows = catalogProducts.map((p, i) => {
     const price = p.price != null ? `${p.currency || "INR"} ${Number(p.price).toLocaleString("en-IN")}` : "n/a";
     return `[P${i + 1}] ${p.name}
-SKU/path: ${p.retailer_id || "n/a"}
 Price: ${price}${p.sale_price != null ? ` (sale ${p.sale_price})` : ""}
 Availability: ${p.availability || "unknown"}
 Category: ${p.category || "n/a"}
-URL: ${p.url || "n/a"}`;
+URL: ${p.url || "n/a — do not invent a shop link"}
+Image: ${p.image_url || "n/a"}`;
   }).join("\n\n");
   const rank = catalogPrimary
     ? "These catalog rows OVERRIDE any product mention in the KB."
@@ -165,9 +193,11 @@ ${extras.greetNow && extras.session?.firstName
 ${catalogProducts.length
     ? extras.nearbyBudget
       ? "INSTRUCTION: No exact hit in their budget. Quote these closest PRODUCT CATALOG MATCHES by name and INR. Say they are the nearest pieces, not that the catalog is empty."
-      : "INSTRUCTION: Reply as a Tyaani sales associate. Quote PRODUCT CATALOG MATCHES by name and INR — they already match the session budget if one is set. Forbidden: asking for a design/category first, mentioning SKU/Shopify/mapping, or saying there is no product / nothing in this budget."
+      : "INSTRUCTION: Quote PRODUCT CATALOG MATCHES by name and INR in the same breath. If a URL is present, you may mention it; if it is n/a, do not invent a link. Forbidden: asking for a design/category first, mentioning SKU/Shopify/mapping, or saying there is no product / nothing in this budget."
     : extras.session?.budgetMin != null || extras.session?.budgetMax != null
     ? "INSTRUCTION: Catalog search for this budget returned no rows. Say so in one line, then ask if they want a nearby price band or another category. Do not invent products."
+    : extras.hasImage
+    ? `INSTRUCTION: They sent a photo/screenshot. Do not say sorry. Thank them, quote PRODUCT CATALOG MATCHES if any, ask category and budget, and give WhatsApp ${displayWhatsApp()}.`
     : ""}
 
 CUSTOMER MESSAGE:
@@ -176,9 +206,48 @@ ${userMessage}`,
   ];
 
   try {
-    return await callLLM({ systemPrompt: SYSTEM_PROMPT, tool: RESPOND_TOOL, messages });
+    const systemPrompt = `${voiceBlock(extras.settings)}\n\n${SYSTEM_PROMPT}`;
+    return await callLLM({ systemPrompt, tool: RESPOND_TOOL, messages });
   } catch (err) {
     console.error("[llmService] provider error:", err);
-    return { reply: "Sorry, something went wrong. Let me connect you with our team.", handoff_needed: true, handoff_reason: "model_error", resolved_product: "" };
+    return fallbackCustomerReply(userMessage, catalogProducts, extras);
   }
+}
+
+export function isBrokenReply(reply) {
+  return /sorry, something went wrong|let me connect you with our team|i('m| am) sorry,? i (can'?t|cannot) (see|view|identify|process|help)/i.test(String(reply || ""));
+}
+
+export function fallbackCustomerReply(userMessage, catalogProducts = [], extras = {}) {
+  const wa = extras.centralWhatsApp || displayWhatsApp();
+  if (catalogProducts.length) {
+    return {
+      reply: formatCatalogPriceReply(catalogProducts, {
+        hasAd: Boolean(extras.session?.ad?.adId || extras.hasAd),
+        hasAdProduct: Boolean(extras.session?.ad?.productName),
+        offer: extras.session?.ad?.headline || "",
+        budgetMin: extras.session?.budgetMin,
+        budgetMax: extras.session?.budgetMax,
+        nearbyBudget: extras.nearbyBudget,
+      }),
+      handoff_needed: false,
+      handoff_reason: "",
+      resolved_product: catalogProducts[0]?.name || "",
+    };
+  }
+  const image = extras.hasImage || /sent an image|screenshot|photo/i.test(String(userMessage || ""));
+  if (image) {
+    return {
+      reply: `Thanks for the photo. I can't match a screenshot to an exact piece automatically — tell me rings, earrings, or a necklace and a budget, or WhatsApp ${wa} and our team will confirm from the picture.`,
+      handoff_needed: false,
+      handoff_reason: "",
+      resolved_product: "",
+    };
+  }
+  return {
+    reply: `I can help with designs, prices, and store visits. Tell me rings, earrings, a necklace, or a budget — or WhatsApp ${wa}.`,
+    handoff_needed: false,
+    handoff_reason: "",
+    resolved_product: "",
+  };
 }

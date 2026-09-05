@@ -178,6 +178,36 @@ function keepRow(row, intent) {
   return true;
 }
 
+function isHttpUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function looksDeadUrl(value) {
+  return /\/cdn\/shop\/files\/sample|facebook\.com\/ads\/image\/\?d=sample/i.test(String(value || ""));
+}
+
+export function normalizeCatalogProduct(row, website = "") {
+  if (!row) return row;
+  const image = isHttpUrl(row.image_url) && !looksDeadUrl(row.image_url) ? row.image_url : "";
+  let url = isHttpUrl(row.url) && !looksDeadUrl(row.url) ? row.url : "";
+  if (!url) {
+    try {
+      const origin = website ? new URL(/^https?:/i.test(website) ? website : `https://${website}`).origin : "";
+      const handle = String(row.retailer_id || "").split("/").pop();
+      if (origin && handle && /^[a-z0-9][a-z0-9-]*$/i.test(handle)) url = `${origin}/products/${handle}`;
+      else if (origin && String(row.url || "").startsWith("/")) url = `${origin}${row.url}`;
+    } catch {
+      // keep empty
+    }
+  }
+  return { ...row, image_url: image, url };
+}
+
 function dedupeCatalog(rows, limit, intent) {
   const seen = new Set();
   const out = [];
@@ -215,7 +245,7 @@ export async function searchCatalogProducts(query, limit = 8, options = {}) {
        sale_price,
        currency,
        category,
-       COALESCE(image_s3_url, image_url) AS image_url,
+       COALESCE(NULLIF(image_url, ''), NULLIF(image_s3_url, '')) AS image_url,
        url,
        availability,
        inventory
@@ -315,7 +345,7 @@ const FEATURED_SELECT = `SELECT
        sale_price,
        currency,
        category,
-       COALESCE(image_s3_url, image_url) AS image_url,
+       COALESCE(NULLIF(image_url, ''), NULLIF(image_s3_url, '')) AS image_url,
        url,
        availability,
        inventory
@@ -367,7 +397,7 @@ export function formatCatalogPriceReply(products, { hasAd = false, hasAdProduct 
 
 export function catalogReplyMissesProducts(reply, products) {
   const text = String(reply || "");
-  if (/don'?t have|do not have|no (specific |catalog )?match|nothing in (this |your )?budget|no \w+ (in|within) (the |your )?budget|not available in (the )?catalog|not (currently )?in context|specify the (design|category)|which (design|category)|what (design|category)|does not map to one sku|shopify (catalog|reference)|featured tyaani/i.test(text)) {
+  if (/sorry, something went wrong|let me connect you with our team|don'?t have|do not have|no (specific |catalog )?match|nothing in (this |your )?budget|no \w+ (in|within) (the |your )?budget|not available in (the )?catalog|not (currently )?in context|specify the (design|category)|which (design|category)|what (design|category)|does not map to one sku|shopify (catalog|reference)|featured tyaani/i.test(text)) {
     return true;
   }
   return !(products || []).some((p) => {

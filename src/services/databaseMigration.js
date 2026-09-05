@@ -18,6 +18,8 @@ export async function migrateDatabase() {
   await sequelize.query('ALTER TABLE "Conversations" ADD COLUMN IF NOT EXISTS "sessionContext" TEXT NOT NULL DEFAULT \'{}\'');
   await sequelize.query('ALTER TABLE "AgentSettings" ADD COLUMN IF NOT EXISTS "nudgeDelayMinutes" INTEGER NOT NULL DEFAULT 60');
   await sequelize.query('ALTER TABLE "AgentSettings" ADD COLUMN IF NOT EXISTS "nudgeMessage" TEXT NOT NULL DEFAULT \'Hi, is there anything else I can help you with?\'');
+  await sequelize.query('ALTER TABLE "AgentSettings" ADD COLUMN IF NOT EXISTS "agentName" VARCHAR(255) NOT NULL DEFAULT \'Tyaani\'');
+  await sequelize.query('ALTER TABLE "AgentSettings" ADD COLUMN IF NOT EXISTS "agentGender" VARCHAR(255) NOT NULL DEFAULT \'female\'');
   await sequelize.query(`
     ALTER TABLE "KBChunks"
     ALTER COLUMN "embedding" TYPE vector(1536)

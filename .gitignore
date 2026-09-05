@@ -1,10 +1,9 @@
 # Dependencies
 node_modules/
 
-# Environment and secrets
+# Environment and secrets — never commit these
 .env
 .env.*
-!.env.example
 
 # Local databases
 *.sqlite
