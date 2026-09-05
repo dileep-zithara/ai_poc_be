@@ -1,5 +1,6 @@
 import { detectCategoryIntent, isPriceAsk } from "./zitharaProd.js";
 import { findStore } from "./storeDirectory.js";
+import { firstNameFromProfile } from "./webhookPayload.js";
 
 const SHOW_MORE = /\b(show me )?(more|aur) (designs?|options?|pieces?|rings?|earrings?|necklaces?)|show more|any more|aur dikhao|more like this|similar\b/i;
 const SCHEDULE_CALL = /\b(call me|give me a call|can you call|please call|schedule|book (a )?(call|appointment)|video call|callback|call back|arrange a (call|visit)|want a call)\b/i;
@@ -9,6 +10,9 @@ const INTERESTED = /\b(interested|i (like|love|want) (this|it)|this one|book thi
 export function emptySession(channel = "web") {
   return {
     channel,
+    customerName: null,
+    firstName: null,
+    customerId: null,
     phone: null,
     city: null,
     storeId: null,
@@ -171,8 +175,15 @@ export function phonePolicy(channel, session, { wantsCall = false } = {}) {
   };
 }
 
-export function updateSessionContext({ session, channel, signals, adContext, customerPhone, catalogProducts }) {
+export function updateSessionContext({ session, channel, signals, adContext, customerPhone, customerName, customerId, catalogProducts }) {
   const next = { ...session, channel: channel || session.channel };
+
+  const incomingName = customerName || signals.customerName || null;
+  if (incomingName && !next.customerName) {
+    next.customerName = incomingName;
+    next.firstName = firstNameFromProfile(incomingName);
+  }
+  if (customerId && !next.customerId) next.customerId = customerId;
 
   if (adContext?.adId) {
     next.ad = {

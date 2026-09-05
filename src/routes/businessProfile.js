@@ -3,6 +3,7 @@ import { BusinessProfile } from "../models/BusinessProfile.js";
 import { WebSource } from "../models/WebSource.js";
 import { KBChunk } from "../models/KBChunk.js";
 import { crawlSite, mergeSignals } from "../services/webCrawler.js";
+import { hydrateStoreDirectory } from "../services/storeDirectory.js";
 import { buildKBIndex } from "../services/kbIndex.js";
 import { callLLM } from "../services/llm/index.js";
 
@@ -69,6 +70,7 @@ router.put("/", async (req, res) => {
   const prefilled = JSON.parse(row.prefilledFields).filter((f) => req.body[f] === undefined);
   row.prefilledFields = JSON.stringify(prefilled);
   await row.save();
+  hydrateStoreDirectory(row.toJSON());
   res.json(serialize(row));
 });
 
@@ -79,7 +81,7 @@ const EXTRACT_TOOL = {
     type: "object",
     properties: {
       businessName: { type: "string", description: "Legal or trading name. Empty string if not found." },
-      location: { type: "string", description: "All store cities and addresses, grouped by city. Empty if not found." },
+      location: { type: "string", description: "One store per line as City: full address. Empty if not found." },
       productsServices: { type: "string", description: "What they sell, from category (Polki, diamond, gold) down to key collections/occasions." },
       contactInfo: { type: "string", description: "Central WhatsApp/phone plus per-store numbers when listed." },
       supportHours: { type: "string", description: "Store or support hours if stated." },
@@ -100,7 +102,7 @@ function pickLonger(current, incoming) {
 function heuristicProfile(pages, signals, website) {
   const home = pages.find((p) => new URL(p.url).pathname === "/") || pages[0];
   const title = (home?.title || "").replace(/\s+/g, " ").trim();
-  const businessName = signals.ogSite || (title.includes("Tyaani") ? "Tyaani Jewellery Private Limited" : title.split("–").pop()?.trim()) || "";
+  const businessName = signals.ogSite || title.split(/[–|]/).pop()?.trim() || "";
 
   const cityNames = [...new Set(signals.whatsapp.map((w) => w.city).filter((c) => c && !/chat|click|book|assist/i.test(c)))];
   const waLines = signals.whatsapp.map((row) => {
@@ -125,7 +127,7 @@ function heuristicProfile(pages, signals, website) {
 
   return {
     businessName,
-    location: cityNames.length ? `Tyaani stores: ${cityNames.join(", ")}` : "",
+    location: cityNames.length ? cityNames.map((city) => `${city}:`).join("\n") : "",
     productsServices: [
       title,
       collectionHint.length ? `Collections on the site: ${collectionHint.join(", ")}` : "",
@@ -257,6 +259,7 @@ async function runWebsiteImport(normalizedUrl, pageLimit) {
       error: null,
       finishedAt: new Date().toISOString(),
     });
+    hydrateStoreDirectory(latest.toJSON());
   } catch (err) {
     console.error("[businessProfile import] error:", err);
     const latest = await getProfile();

@@ -13,7 +13,7 @@ import {
   updateSessionContext,
   wantsStoreInfo,
 } from "../services/sessionContext.js";
-import { findStore, formatStore, storeBlock } from "../services/storeDirectory.js";
+import { findStore, formatStore, loadStoreDirectory, storeBlock } from "../services/storeDirectory.js";
 import { parseWebhook } from "../services/webhookPayload.js";
 
 const router = Router();
@@ -26,6 +26,7 @@ router.post("/", async (req, res) => {
   try {
     let { sessionId = "anonymous", message, adId, cardId, channel = "web", attachment, referral, customerPhone, webhook } = req.body;
     let parsedWebhook = null;
+    let customerId = null;
     if (webhook) {
       parsedWebhook = parseWebhook(webhook);
       if (parsedWebhook.error) return res.status(400).json({ error: parsedWebhook.error });
@@ -44,6 +45,8 @@ router.post("/", async (req, res) => {
       channel = parsedWebhook.channel || channel;
       message = parsedWebhook.message || message;
       customerPhone = parsedWebhook.phone || customerPhone;
+      customerName = parsedWebhook.customerName || customerName;
+      customerId = parsedWebhook.customerId || null;
       attachment = parsedWebhook.attachment || attachment;
       if (parsedWebhook.referral) {
         referral = {
@@ -122,6 +125,7 @@ router.post("/", async (req, res) => {
       ? `[Customer sent a${attachment.type === "image" ? "n" : ""} ${attachment.type}${attachment.name ? ` named "${attachment.name}"` : ""}]`
       : "";
     const effectiveMessage = [attachmentMarker, message?.trim()].filter(Boolean).join("\n");
+    await loadStoreDirectory();
     const signals = parseMessageSignals(message || "");
 
     let session = updateSessionContext({
@@ -130,6 +134,8 @@ router.post("/", async (req, res) => {
       signals,
       adContext: activeContext,
       customerPhone: customerPhone || null,
+      customerName: customerName || null,
+      customerId,
       catalogProducts: [],
     });
 
@@ -186,8 +192,13 @@ router.post("/", async (req, res) => {
       signals: { ...signals, showMore: false, category: null },
       adContext: activeContext,
       customerPhone: customerPhone || null,
+      customerName: customerName || null,
+      customerId,
       catalogProducts,
     });
+
+    const priorAssistant = history.filter((row) => row.role === "assistant").length;
+    const greetNow = priorAssistant === 0 || /^(hi|hii+|hello|hey|namaste|good (morning|afternoon|evening))\b/i.test(String(message || "").trim());
 
     const rawKb = await retrieveKB(message || attachmentMarker, 6);
     const kbChunks = catalogProducts.length ? policyKbChunks(rawKb) : rawKb;
@@ -206,6 +217,7 @@ router.post("/", async (req, res) => {
       phone,
       catalogPrimary: catalogProducts.length > 0,
       nearbyBudget,
+      greetNow,
     });
 
     const askedForHuman = /\b(agent|human|person|executive|talk to (someone|a person))\b/i.test(message || "");

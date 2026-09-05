@@ -15,11 +15,22 @@ function first(list) {
 }
 
 function skip(channel, reason, extras = {}) {
-  return { skip: true, skipReason: reason, channel, message: "", phone: null, referral: null, attachment: null, ...extras };
+  return { skip: true, skipReason: reason, channel, message: "", phone: null, customerName: null, referral: null, attachment: null, ...extras };
 }
 
 function ok(channel, fields) {
-  return { skip: false, channel, message: "", phone: null, referral: null, attachment: null, ...fields };
+  return { skip: false, channel, message: "", phone: null, customerName: null, referral: null, attachment: null, ...fields };
+}
+
+export function firstNameFromProfile(name) {
+  const cleaned = String(name || "")
+    .replace(/[\u{1F300}-\u{1FAFF}]/gu, "")
+    .replace(/[_./]+/g, " ")
+    .trim();
+  if (!cleaned || /^\+?\d[\d\s-]{7,}$/.test(cleaned)) return null;
+  const first = cleaned.split(/\s+/)[0];
+  if (first.length < 2 || first.length > 24) return null;
+  return first.charAt(0).toUpperCase() + first.slice(1);
 }
 
 function waReferral(ref) {
@@ -51,9 +62,10 @@ function messengerReferral(ref) {
   };
 }
 
-function parseWhatsAppMessage(msg, phoneFromContact) {
+function parseWhatsAppMessage(msg, phoneFromContact, profileName) {
   const type = String(msg.type || "text");
   const phone = msg.from || phoneFromContact || null;
+  const customerName = profileName || msg.profile?.name || null;
   const referral = waReferral(msg.referral);
   let message = "";
   let attachment = null;
@@ -83,7 +95,7 @@ function parseWhatsAppMessage(msg, phoneFromContact) {
   }
 
   if (!message && referral) message = referral.welcomeText || "Hi";
-  return ok("whatsapp", { message, phone, referral, attachment, event: type });
+  return ok("whatsapp", { message, phone, customerName, referral, attachment, event: type });
 }
 
 function parseWhatsAppWrapped(body) {
@@ -91,8 +103,9 @@ function parseWhatsAppWrapped(body) {
   const value = change?.value || {};
   const msg = first(value.messages);
   if (!msg) return skip("whatsapp", "no_inbound_message", { event: change?.field || "whatsapp" });
-  const phone = first(value.contacts)?.wa_id || msg.from;
-  return parseWhatsAppMessage(msg, phone);
+  const contact = first(value.contacts);
+  const phone = contact?.wa_id || msg.from;
+  return parseWhatsAppMessage(msg, phone, contact?.profile?.name || null);
 }
 
 function parseMessengerEvent(body, wrapper) {
@@ -108,6 +121,7 @@ function parseMessengerEvent(body, wrapper) {
     return ok("instagram", {
       message: value.text || "",
       phone: null,
+      customerName: value.from?.username || value.from?.name || null,
       customerId: value.from?.id || null,
       referral: mediaType === "AD" ? { adId: value.media?.id || null, sourceType: "AD_COMMENT", headline: "", body: "", imageUrl: "", videoUrl: "", welcomeText: "" } : null,
       event: "comment",
@@ -122,7 +136,14 @@ function parseMessengerEvent(body, wrapper) {
   const standaloneRef = messengerReferral(messaging.referral);
   const msg = messaging.message;
   if (!msg && standaloneRef) {
-    return ok(channel, { message: "Hi", phone: null, customerId: messaging.sender?.id, referral: standaloneRef, event: "ad_referral" });
+    return ok(channel, {
+      message: "Hi",
+      phone: null,
+      customerName: messaging.sender?.name || messaging.sender?.username || null,
+      customerId: messaging.sender?.id,
+      referral: standaloneRef,
+      event: "ad_referral",
+    });
   }
   if (!msg) return skip(channel, "no_inbound_message", { event: "unknown" });
   if (msg.is_echo) return skip(channel, "outbound_echo", { event: "echo" });
@@ -151,6 +172,7 @@ function parseMessengerEvent(body, wrapper) {
   return ok(channel, {
     message,
     phone: null,
+    customerName: messaging.sender?.name || messaging.sender?.username || null,
     customerId: messaging.sender?.id || null,
     referral,
     attachment,

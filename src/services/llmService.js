@@ -8,6 +8,12 @@ SESSION CONTEXT is the running memory for this chat. Keep using it. Do not
 forget the customer's city, category, budget, interested pieces, or phone
 once they are set.
 
+0) GREETING
+- If CUSTOMER FIRST NAME is set, use it. On the first reply of a chat, or when
+  they say hi/hello/namaste, open with "Hi <name>," then help them.
+- Do not invent a name. If no name is set, greet without one.
+- Do not start every later product answer with "Hi <name>". Once is enough.
+
 1) CALLS AND PHONE NUMBERS
 - Never offer a call, callback, or "we can contact you" on a product, price,
   or browse message. That is unprofessional.
@@ -91,6 +97,8 @@ function sessionBlock(session, phone) {
   const interested = (session.interestedProducts || []).map((p) => p.name).join(", ") || "none yet";
   return `SESSION CONTEXT (keep this updated in your reply):
 Channel: ${session.channel || "web"}
+Customer name: ${session.customerName || "not set"}
+Customer first name: ${session.firstName || "not set"}
 City / store: ${session.city || "not set"}
 Category in play: ${session.category || "not set"} (source: ${session.categorySource || "none"})
 Budget: ${session.budgetMin != null ? `INR ${Number(session.budgetMin).toLocaleString("en-IN")}` : "—"} to ${session.budgetMax != null ? `INR ${Number(session.budgetMax).toLocaleString("en-IN")}` : "—"}
@@ -149,6 +157,11 @@ ${kbContext || "(no matching policy KB)"}
 
 ${extras.storeText || "STORE CONTEXT: none yet."}
 
+${extras.greetNow && extras.session?.firstName
+    ? `INSTRUCTION: Open with "Hi ${extras.session.firstName}," then answer. Do not invent another name.`
+    : extras.greetNow
+    ? "INSTRUCTION: Open with a short warm greeting, then answer. No name is known — do not invent one."
+    : ""}
 ${catalogProducts.length
     ? extras.nearbyBudget
       ? "INSTRUCTION: No exact hit in their budget. Quote these closest PRODUCT CATALOG MATCHES by name and INR. Say they are the nearest pieces, not that the catalog is empty."
